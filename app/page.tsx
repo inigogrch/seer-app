@@ -92,7 +92,7 @@ const stories = [
 
 const StoryCard = ({ story }: { story: (typeof stories)[0] }) => (
   <Card className="group relative w-[420px] flex-shrink-0 snap-start flex flex-col overflow-hidden transition-shadow duration-300 hover:shadow-xl p-4">
-    <CardHeader className="flex items-center justify-between p-0 pb-2 text-xs text-muted-foreground">
+    <CardHeader className="flex items-center justify-between p-0 text-xs text-muted-foreground">
       <div className="flex items-center gap-2">
         {story.sourceIcon}
         <span>{story.source}</span>
@@ -120,9 +120,9 @@ const StoryCard = ({ story }: { story: (typeof stories)[0] }) => (
         alt={story.title}
         width={400}
         height={150}
-        className="rounded-md mb-1 aspect-[16/8] object-cover w-full"
+        className="rounded-md mb-1 aspect-[16/8] object-cover w-full -mt-2.5"
       />
-      <h3 className="font-semibold text-lg leading-tight mb-1">{story.title}</h3>
+      <h3 className="font-semibold text-xl leading-tight mb-1">{story.title}</h3>
       <p className="text-sm text-muted-foreground mb-1 line-clamp-3">{story.description}</p>
       <div className="flex flex-wrap gap-1.5 min-h-[2.5rem] items-start content-start">
         {story.tags.map((tag) => (
