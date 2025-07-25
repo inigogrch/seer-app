@@ -78,6 +78,20 @@ const StoryCard = ({ story }: { story: Story }) => (
         <span>{story.source_name}</span>
       </div>
       <div className="flex items-center gap-3">
+        {/* Commented out relevance score as requested */}
+        {/* <Badge
+          variant="outline"
+          className={cn(
+            "text-xs",
+            story.relevance > 90
+              ? "bg-red-100 text-red-800 border-red-200"
+              : story.relevance > 85
+                ? "bg-orange-100 text-orange-800 border-orange-200"
+                : "bg-cyan-100 text-cyan-800 border-cyan-200",
+          )}
+        >
+          {story.relevance}% relevance
+        </Badge> */}
         <span className="whitespace-nowrap">{story.time}</span>
       </div>
     </CardHeader>
@@ -187,10 +201,9 @@ export default function FeedPage() {
   const fetchStories = async () => {
     try {
       setLoading(true)
-      
       const { data, error } = await supabase
         .from("stories")
-        .select()
+        .select("*")
         .order("published_at", { ascending: false })
         .limit(50)
 
@@ -199,16 +212,10 @@ export default function FeedPage() {
         return
       }
 
-      if (!data || data.length === 0) {
-        setTotalStories(0)
-        setLoading(false)
-        return
-      }
-
       const stories: Story[] = data.map((story) => ({
         id: story.id,
-        source_name: story.source_name || story.author || "Unknown Source",
-        sourceIcon: getSourceIcon(story.source_name || story.author || ""),
+        source_name: story.source_name || "Unknown Source",
+        sourceIcon: getSourceIcon(story.source_name || ""),
         title: story.title || "Untitled",
         content: story.content || "",
         tags: Array.isArray(story.tags) 
@@ -223,36 +230,28 @@ export default function FeedPage() {
       }))
 
       setTotalStories(stories.length)
-      
       setSections((prevSections) => {
         const newSections = [...prevSections]
-        newSections[0].stories = stories.slice(0, 15) // Top Picks
-        
-        // Software Engineering stories
-        const softwareStories = stories.filter(story => 
+        newSections[0].stories = stories.slice(0, 15) // Top Picks - more stories
+        newSections[1].stories = stories.filter(story => 
           story.source_name.toLowerCase().includes('engineering') ||
           story.source_name.toLowerCase().includes('github') ||
           story.source_name.toLowerCase().includes('stack') ||
           story.tags.some(tag => tag.toLowerCase().includes('software') || 
                               tag.toLowerCase().includes('programming') ||
                               tag.toLowerCase().includes('development'))
-        )
-        newSections[1].stories = softwareStories.slice(0, 10)
-        
-        // Data Science stories  
-        const dataStories = stories.filter(story => 
+        ).slice(0, 10)
+        newSections[2].stories = stories.filter(story => 
           story.tags.some(tag => tag.toLowerCase().includes('data') || 
                               tag.toLowerCase().includes('analytics') ||
                               tag.toLowerCase().includes('science') ||
                               tag.toLowerCase().includes('ml') ||
                               tag.toLowerCase().includes('ai'))
-        )
-        newSections[2].stories = dataStories.slice(0, 10)
-        
+        ).slice(0, 10)
         return newSections
       })
     } catch (error) {
-      console.error("Error in fetchStories:", error)
+      console.error("Error fetching stories:", error)
     } finally {
       setLoading(false)
     }
@@ -281,7 +280,7 @@ export default function FeedPage() {
       <header className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-3xl font-bold">Latest Intelligence</h1>
-                    <p className="text-muted-foreground">
+          <p className="text-muted-foreground">
             {loading ? "Loading stories..." : `${totalStories} stories curated for you`}
           </p>
         </div>
