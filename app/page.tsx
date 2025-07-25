@@ -22,23 +22,34 @@ import {
   Cpu,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import Image from "next/image"
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { supabase } from "@/lib/supabaseClient"
 
 // Define the story interface based on Supabase schema
 interface Story {
-  id: number
+  id: string // UUID from database
   source_name: string
   sourceIcon?: React.ReactNode
   title: string
-  content: string
+  content?: string // Optional for personalized stories that use summary
   tags: string[]
   published_at: string
   url: string
   image_url?: string
   time?: string // computed field for relative time
+  // Personalization fields (when available)
+  relevance_score?: number
+  summary?: string
+  explanation?: string // TODO: Will be used to pre-populate chat interface with relevance explanation
+}
+
+// User preferences interface
+interface UserPreferences {
+  role: string
+  interests: string[]
+  projects: string
+  timestamp: string
 }
 
 // Helper function to convert published_at to relative time
@@ -76,6 +87,11 @@ const StoryCard = ({ story }: { story: Story }) => (
       <div className="flex items-center gap-2">
         {story.sourceIcon}
         <span>{story.source_name}</span>
+        {story.relevance_score && (
+          <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5 bg-primary/10 text-primary">
+            {story.relevance_score}% match
+          </Badge>
+        )}
       </div>
       <div className="flex items-center gap-3">
         <span className="whitespace-nowrap">{story.time}</span>
@@ -86,7 +102,9 @@ const StoryCard = ({ story }: { story: Story }) => (
         Story Image
       </div>
       <h3 className="font-semibold text-xl leading-tight mb-1">{story.title}</h3>
-      <p className="text-sm text-muted-foreground mb-1 line-clamp-3">{story.content}</p>
+      <p className="text-sm text-muted-foreground mb-1 line-clamp-3">
+        {story.summary || story.content}
+      </p>
       <div className="flex flex-wrap gap-1.5 min-h-[2.5rem] items-start content-start">
         {story.tags && story.tags.map((tag) => (
           <Badge key={tag} variant="secondary" className="text-[10px] px-2 py-0.5">
@@ -183,12 +201,35 @@ export default function FeedPage() {
   const [sections, setSections] = useState(initialSections)
   const [loading, setLoading] = useState(true)
   const [totalStories, setTotalStories] = useState(0)
+  const [isPersonalized, setIsPersonalized] = useState(false)
+  const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null)
+  const [personalizationError, setPersonalizationError] = useState<string | null>(null)
 
   const fetchStories = async () => {
     try {
       setLoading(true)
       
-      const { data, error } = await supabase
+      // Check for user preferences in localStorage
+      const storedPrefs = localStorage.getItem('user_preferences')
+      let userPrefs: UserPreferences | null = null
+      
+      if (storedPrefs) {
+        try {
+          userPrefs = JSON.parse(storedPrefs)
+          setUserPreferences(userPrefs)
+        } catch (e) {
+          console.error('Failed to parse user preferences:', e)
+        }
+      }
+      
+      // If we have user preferences, fetch personalized feed
+      if (userPrefs) {
+        await fetchPersonalizedStories(userPrefs)
+        return
+      }
+      
+      // Otherwise, fetch regular feed
+      const { error } = await supabase
         .from("stories")
         .select()
         .order("published_at", { ascending: false })
@@ -199,37 +240,132 @@ export default function FeedPage() {
         return
       }
 
-      if (!data || data.length === 0) {
-        setTotalStories(0)
-        setLoading(false)
-        return
-      }
-
-      const stories: Story[] = data.map((story) => ({
-        id: story.id,
-        source_name: story.source_name || story.author || "Unknown Source",
-        sourceIcon: getSourceIcon(story.source_name || story.author || ""),
-        title: story.title || "Untitled",
-        content: story.content || "",
-        tags: Array.isArray(story.tags) 
-          ? story.tags 
-          : typeof story.tags === 'string' 
-            ? story.tags.split(',').map((tag: string) => tag.trim()).filter(Boolean)
-            : [],
-        published_at: story.published_at,
-        url: story.url || "#",
-        image_url: story.image_url,
-        time: getRelativeTime(story.published_at),
-      }))
-
-      setTotalStories(stories.length)
+      // Fall back to regular feed
+      await fetchRegularStories()
+    } catch (error) {
+      console.error("Error in fetchStories:", error)
+    } finally {
+      setLoading(false)
+    }
+  }
+  
+  const fetchPersonalizedStories = async (userPrefs: UserPreferences) => {
+    try {
+      const response = await fetch('/api/retrieve-feed', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(userPrefs)
+      })
       
-      setSections((prevSections) => {
-        const newSections = [...prevSections]
-        newSections[0].stories = stories.slice(0, 15) // Top Picks
+      if (!response.ok) {
+        throw new Error('Failed to fetch personalized feed')
+      }
+      
+      const result = await response.json()
+      
+      if (result.success && result.stories) {
+        setIsPersonalized(true)
+        const stories: Story[] = result.stories.map((story: Story) => ({
+          ...story,
+          sourceIcon: getSourceIcon(story.source_name || "")
+        }))
         
-        // Software Engineering stories
-        const softwareStories = stories.filter(story => 
+        setTotalStories(stories.length)
+        
+        // Distribute 30 stories across 3 rows (10 stories each)
+        const storiesPerRow = 10
+        const row1Stories = stories.slice(0, storiesPerRow)
+        const row2Stories = stories.slice(storiesPerRow, storiesPerRow * 2)
+        const row3Stories = stories.slice(storiesPerRow * 2, storiesPerRow * 3)
+        
+        setSections([
+          {
+            id: "top-personalized",
+            title: "Top Recommendations",
+            icon: <Plus className="w-5 h-5" />,
+            stories: row1Stories
+          },
+          {
+            id: "relevant-picks",
+            title: "Relevant to Your Work",
+            icon: <Bot className="w-5 h-5" />,
+            stories: row2Stories
+          },
+          {
+            id: "trending-insights",
+            title: "Trending in Your Field",
+            icon: <BarChart className="w-5 h-5" />,
+            stories: row3Stories
+          }
+        ])
+      } else {
+        console.error('Personalized feed API returned error:', result.error)
+        // Fall back to regular feed
+        await fetchRegularStories()
+      }
+    } catch (error) {
+      console.error('Error fetching personalized stories:', error)
+      setPersonalizationError(error instanceof Error ? error.message : 'Unknown error')
+      
+      // Fall back to regular feed after a brief delay
+      setTimeout(async () => {
+        console.log('Falling back to regular feed due to personalization error')
+        await fetchRegularStories()
+      }, 1000)
+    }
+  }
+  
+  const fetchRegularStories = async () => {
+    const { data, error } = await supabase
+      .from("stories")
+      .select()
+      .order("published_at", { ascending: false })
+      .limit(50)
+
+    if (error) {
+      console.error("Error fetching stories:", error)
+      return
+    }
+
+    if (!data || data.length === 0) {
+      setTotalStories(0)
+      return
+    }
+
+    const stories: Story[] = data.map((story) => ({
+      id: story.id,
+      source_name: story.source_name || story.author || "Unknown Source",
+      sourceIcon: getSourceIcon(story.source_name || story.author || ""),
+      title: story.title || "Untitled",
+      content: story.content || "",
+      tags: Array.isArray(story.tags) 
+        ? story.tags 
+        : typeof story.tags === 'string' 
+          ? story.tags.split(',').map((tag: string) => tag.trim()).filter(Boolean)
+          : [],
+      published_at: story.published_at,
+      url: story.url || "#",
+      image_url: story.image_url,
+      time: getRelativeTime(story.published_at),
+    }))
+
+    setTotalStories(stories.length)
+    
+    setSections((prevSections) => {
+      const newSections = [...prevSections]
+      const usedStoryIds = new Set<string>()
+      
+      // Top Picks - first 15 stories
+      const topPicks = stories.slice(0, 15)
+      newSections[0].stories = topPicks
+      topPicks.forEach(story => usedStoryIds.add(story.id))
+      
+      // Software Engineering stories - exclude already used stories
+      const softwareStories = stories
+        .filter(story => !usedStoryIds.has(story.id))
+        .filter(story => 
           story.source_name.toLowerCase().includes('engineering') ||
           story.source_name.toLowerCase().includes('github') ||
           story.source_name.toLowerCase().includes('stack') ||
@@ -237,32 +373,32 @@ export default function FeedPage() {
                               tag.toLowerCase().includes('programming') ||
                               tag.toLowerCase().includes('development'))
         )
-        newSections[1].stories = softwareStories.slice(0, 10)
-        
-        // Data Science stories  
-        const dataStories = stories.filter(story => 
+        .slice(0, 10)
+      newSections[1].stories = softwareStories
+      softwareStories.forEach(story => usedStoryIds.add(story.id))
+      
+      // Data Science stories - exclude already used stories
+      const dataStories = stories
+        .filter(story => !usedStoryIds.has(story.id))
+        .filter(story => 
           story.tags.some(tag => tag.toLowerCase().includes('data') || 
                               tag.toLowerCase().includes('analytics') ||
                               tag.toLowerCase().includes('science') ||
                               tag.toLowerCase().includes('ml') ||
                               tag.toLowerCase().includes('ai'))
         )
-        newSections[2].stories = dataStories.slice(0, 10)
-        
-        return newSections
-      })
-    } catch (error) {
-      console.error("Error in fetchStories:", error)
-    } finally {
-      setLoading(false)
-    }
+        .slice(0, 10)
+      newSections[2].stories = dataStories
+      
+      return newSections
+    })
   }
 
   useEffect(() => {
     fetchStories()
     const interval = setInterval(fetchStories, 300000) // Fetch every 5 minutes
     return () => clearInterval(interval)
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const moveSection = (index: number, direction: "up" | "down") => {
     const newSections = [...sections]
@@ -280,10 +416,26 @@ export default function FeedPage() {
     <div className="p-8">
       <header className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-3xl font-bold">Latest Intelligence</h1>
-                    <p className="text-muted-foreground">
-            {loading ? "Loading stories..." : `${totalStories} stories curated for you`}
+          <h1 className="text-3xl font-bold">
+            {isPersonalized ? "Your Personalized Feed" : "Latest Intelligence"}
+          </h1>
+          <p className="text-muted-foreground">
+            {loading 
+              ? "Loading stories..." 
+              : personalizationError
+                ? "Showing general feed due to personalization issue"
+                : isPersonalized 
+                  ? `${totalStories} stories personalized for your ${userPreferences?.role || 'role'} interests`
+                  : `${totalStories} stories curated for you`
+            }
           </p>
+          {personalizationError && (
+            <div className="mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+              <p className="text-sm text-yellow-800">
+                <strong>Note:</strong> Unable to load personalized content. Showing general feed instead.
+              </p>
+            </div>
+          )}
         </div>
         <Button variant="outline" onClick={fetchStories} disabled={loading}>
           <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
