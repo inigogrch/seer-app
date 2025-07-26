@@ -178,8 +178,8 @@ export default function PersonalizePage() {
                   
                   localStorage.setItem('user_preferences', JSON.stringify(userPreferences))
                   
-                  // Route to main feed page
-                  router.push('/')
+                  // Route to main feed page with personalizing parameter
+                  router.push('/?personalizing=true')
                 }}
               >
                 Generate Feed <ArrowRight className="w-4 h-4 ml-2" />

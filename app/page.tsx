@@ -1,8 +1,10 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
+import { useSearchParams } from "next/navigation"
 import Link from "next/link"
+import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -98,8 +100,56 @@ const StoryCard = ({ story }: { story: Story }) => (
       </div>
     </CardHeader>
     <CardContent className="p-0 flex-grow">
-      <div className="h-[150px] mb-1 bg-gray-100 rounded-md flex items-center justify-center text-gray-400 -mt-2.5">
-        Story Image
+      <div className="h-[150px] mb-1 bg-gray-100 rounded-md flex items-center justify-center -mt-2.5 overflow-hidden">
+        {(() => {
+          const sourceName = story.source_name.toLowerCase()
+          if (sourceName.includes('arxiv')) {
+            return (
+              <Image 
+                src="/arxiv_logo.jpg" 
+                alt="arXiv" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          if (sourceName.includes('mit') && (sourceName.includes('data') || sourceName.includes('ai') || sourceName.includes('research'))) {
+            return (
+              <Image 
+                src="/mit_tech_review.png" 
+                alt="MIT News" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          if (sourceName.includes('google') && sourceName.includes('research')) {
+            return (
+              <Image 
+                src="/google_research_logo.jpg" 
+                alt="Google Research" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          if (sourceName.includes('aws') && (sourceName.includes('machine learning') || sourceName.includes('ml'))) {
+            return (
+              <Image 
+                src="/aws_logo.png" 
+                alt="AWS Machine Learning Blog" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          // Default placeholder for other sources
+          return <span className="text-gray-400">Story Image</span>
+        })()}
       </div>
       <h3 className="font-semibold text-xl leading-tight mb-1">{story.title}</h3>
       <p className="text-sm text-muted-foreground mb-1 line-clamp-3">
@@ -151,20 +201,28 @@ const StorySection = ({
   onMoveDown: (index: number) => void
   loading?: boolean
 }) => (
-  <section className="mb-4">
-    <div className="flex items-center justify-between mb-4">
-      <h2 className="text-xl font-bold flex items-center gap-2">
-        {icon} {title}
-      </h2>
-      <div className="flex items-center gap-1">
-        <Button variant="ghost" size="icon" onClick={() => onMoveUp(index)} disabled={index === 0}>
-          <ChevronUp className="w-4 h-4" />
-        </Button>
-        <Button variant="ghost" size="icon" onClick={() => onMoveDown(index)} disabled={index === total - 1}>
-          <ChevronDown className="w-4 h-4" />
-        </Button>
+  <section className="mb-8">
+    {/* Show title/controls for regular feed, dashed line for personalized feed */}
+    {title ? (
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-bold flex items-center gap-2">
+          {icon} {title}
+        </h2>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon" onClick={() => onMoveUp(index)} disabled={index === 0}>
+            <ChevronUp className="w-4 h-4" />
+          </Button>
+          <Button variant="ghost" size="icon" onClick={() => onMoveDown(index)} disabled={index === total - 1}>
+            <ChevronDown className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
-    </div>
+    ) : (
+      // Dashed line separator for personalized feed
+      index > 0 && (
+        <div className="mb-6 border-t border-dashed border-gray-300"></div>
+      )
+    )}
     <div className="flex gap-6 overflow-x-auto pb-4 snap-x snap-mandatory">
       {loading && stories.length === 0 ? (
         <div className="flex items-center justify-center w-full h-40 text-muted-foreground">
@@ -187,27 +245,34 @@ const StorySection = ({
 )
 
 const initialSections = [
-  { id: "top-picks", title: "Top Picks", icon: <Plus className="w-5 h-5" />, stories: [] as Story[] },
-  {
-    id: "software-eng",
-    title: "Software Engineering",
-    icon: <Bot className="w-5 h-5" />,
-    stories: [] as Story[],
-  },
-  { id: "data-science", title: "Data Science", icon: <BarChart className="w-5 h-5" />, stories: [] as Story[] },
+  { id: "public-row-1", title: "", icon: <></>, stories: [] as Story[] },
+  { id: "public-row-2", title: "", icon: <></>, stories: [] as Story[] },
+  { id: "public-row-3", title: "", icon: <></>, stories: [] as Story[] },
 ]
 
-export default function FeedPage() {
+function FeedPageContent() {
   const [sections, setSections] = useState(initialSections)
   const [loading, setLoading] = useState(true)
   const [totalStories, setTotalStories] = useState(0)
   const [isPersonalized, setIsPersonalized] = useState(false)
   const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null)
   const [personalizationError, setPersonalizationError] = useState<string | null>(null)
+  const [isPersonalizing, setIsPersonalizing] = useState(false)
+  const searchParams = useSearchParams()
 
-  const fetchStories = async () => {
+  const fetchStories = async (forceRefresh = false) => {
     try {
       setLoading(true)
+      
+      // Check if we're coming from personalization flow
+      const isPersonalizingFromUrl = searchParams?.get('personalizing') === 'true'
+      if (isPersonalizingFromUrl) {
+        setIsPersonalizing(true)
+        // Scroll to top so user can see the loading animation
+        window.scrollTo({ top: 0, behavior: 'smooth' })
+        // Clear the URL parameter
+        window.history.replaceState({}, '', '/')
+      }
       
       // Check for user preferences in localStorage
       const storedPrefs = localStorage.getItem('user_preferences')
@@ -222,8 +287,33 @@ export default function FeedPage() {
         }
       }
       
-      // If we have user preferences, fetch personalized feed
+      // If we have user preferences, check for cached stories first
       if (userPrefs) {
+        // Check for cached personalized stories
+        const cachedStories = localStorage.getItem('personalized_stories')
+        const cacheTimestamp = localStorage.getItem('personalized_stories_timestamp')
+        
+        if (!forceRefresh && cachedStories && cacheTimestamp && !isPersonalizingFromUrl) {
+          try {
+            const stories = JSON.parse(cachedStories)
+            const timestamp = parseInt(cacheTimestamp)
+            const cacheAge = Date.now() - timestamp
+            const cacheExpiryMs = 30 * 60 * 1000 // 30 minutes
+            
+            // Use cached stories if they're less than 30 minutes old
+            if (cacheAge < cacheExpiryMs && stories.length > 0) {
+              console.log('Using cached personalized stories')
+              loadCachedPersonalizedStories(stories)
+              return
+            } else {
+              console.log('Cached stories expired, fetching fresh ones')
+            }
+          } catch (e) {
+            console.error('Failed to parse cached stories:', e)
+          }
+        }
+        
+        // Fetch fresh personalized stories
         await fetchPersonalizedStories(userPrefs)
         return
       }
@@ -246,11 +336,51 @@ export default function FeedPage() {
       console.error("Error in fetchStories:", error)
     } finally {
       setLoading(false)
+      setIsPersonalizing(false)
     }
+  }
+  
+  const loadCachedPersonalizedStories = (cachedStories: Story[]) => {
+    setIsPersonalized(true)
+    setTotalStories(cachedStories.length)
+    
+    // Regenerate sourceIcon for cached stories (since React elements can't be cached)
+    const storiesWithIcons = cachedStories.map(story => ({
+      ...story,
+      sourceIcon: getSourceIcon(story.source_name || "")
+    }))
+    
+    // Distribute cached stories across 3 rows
+    const storiesPerRow = Math.ceil(storiesWithIcons.length / 3)
+    const row1Stories = storiesWithIcons.slice(0, storiesPerRow)
+    const row2Stories = storiesWithIcons.slice(storiesPerRow, storiesPerRow * 2)
+    const row3Stories = storiesWithIcons.slice(storiesPerRow * 2, storiesPerRow * 3)
+    
+    setSections([
+      {
+        id: "personalized-row-1",
+        title: "",
+        icon: <></>,
+        stories: row1Stories
+      },
+      {
+        id: "personalized-row-2", 
+        title: "",
+        icon: <></>,
+        stories: row2Stories
+      },
+      {
+        id: "personalized-row-3",
+        title: "", 
+        icon: <></>,
+        stories: row3Stories
+      }
+    ])
   }
   
   const fetchPersonalizedStories = async (userPrefs: UserPreferences) => {
     try {
+      setIsPersonalizing(true)
       const response = await fetch('/api/retrieve-feed', {
         method: 'POST',
         headers: {
@@ -267,36 +397,61 @@ export default function FeedPage() {
       
       if (result.success && result.stories) {
         setIsPersonalized(true)
-        const stories: Story[] = result.stories.map((story: Story) => ({
-          ...story,
-          sourceIcon: getSourceIcon(story.source_name || "")
-        }))
         
-        setTotalStories(stories.length)
+        // Deduplicate stories by ID to prevent duplicate keys
+        const seenIds = new Set<string>()
+        const uniqueStories: Story[] = result.stories
+          .filter((story: Story) => {
+            if (seenIds.has(story.id)) {
+              console.warn(`Duplicate story found: ${story.id} - ${story.title}`)
+              return false
+            }
+            seenIds.add(story.id)
+            return true
+          })
+          .map((story: Story) => ({
+            ...story,
+            sourceIcon: getSourceIcon(story.source_name || "")
+          }))
         
-        // Distribute 30 stories across 3 rows (10 stories each)
-        const storiesPerRow = 10
-        const row1Stories = stories.slice(0, storiesPerRow)
-        const row2Stories = stories.slice(storiesPerRow, storiesPerRow * 2)
-        const row3Stories = stories.slice(storiesPerRow * 2, storiesPerRow * 3)
+        // Cache the personalized stories in localStorage (exclude sourceIcon as it contains React elements)
+        try {
+          const storiesToCache = uniqueStories.map(story => {
+            const { sourceIcon, ...storyWithoutIcon } = story
+            return storyWithoutIcon
+          })
+          localStorage.setItem('personalized_stories', JSON.stringify(storiesToCache))
+          localStorage.setItem('personalized_stories_timestamp', Date.now().toString())
+          console.log('Cached personalized stories for future use')
+        } catch (e) {
+          console.error('Failed to cache personalized stories:', e)
+        }
+        
+        setTotalStories(uniqueStories.length)
+        
+        // Distribute unique stories across 3 rows with no titles (personalized layout)
+        const storiesPerRow = Math.ceil(uniqueStories.length / 3)
+        const row1Stories = uniqueStories.slice(0, storiesPerRow)
+        const row2Stories = uniqueStories.slice(storiesPerRow, storiesPerRow * 2)
+        const row3Stories = uniqueStories.slice(storiesPerRow * 2, storiesPerRow * 3)
         
         setSections([
           {
-            id: "top-personalized",
-            title: "Top Recommendations",
-            icon: <Plus className="w-5 h-5" />,
+            id: "personalized-row-1",
+            title: "",
+            icon: <></>,
             stories: row1Stories
           },
           {
-            id: "relevant-picks",
-            title: "Relevant to Your Work",
-            icon: <Bot className="w-5 h-5" />,
+            id: "personalized-row-2", 
+            title: "",
+            icon: <></>,
             stories: row2Stories
           },
           {
-            id: "trending-insights",
-            title: "Trending in Your Field",
-            icon: <BarChart className="w-5 h-5" />,
+            id: "personalized-row-3",
+            title: "", 
+            icon: <></>,
             stories: row3Stories
           }
         ])
@@ -314,6 +469,8 @@ export default function FeedPage() {
         console.log('Falling back to regular feed due to personalization error')
         await fetchRegularStories()
       }, 1000)
+    } finally {
+      setIsPersonalizing(false)
     }
   }
   
@@ -355,40 +512,16 @@ export default function FeedPage() {
     
     setSections((prevSections) => {
       const newSections = [...prevSections]
-      const usedStoryIds = new Set<string>()
       
-      // Top Picks - first 15 stories
-      const topPicks = stories.slice(0, 15)
-      newSections[0].stories = topPicks
-      topPicks.forEach(story => usedStoryIds.add(story.id))
+      // Distribute all stories evenly across 3 rows, filling upper rows first
+      const storiesPerRow = Math.ceil(stories.length / 3)
+      const row1Stories = stories.slice(0, storiesPerRow)
+      const row2Stories = stories.slice(storiesPerRow, storiesPerRow * 2)
+      const row3Stories = stories.slice(storiesPerRow * 2, storiesPerRow * 3)
       
-      // Software Engineering stories - exclude already used stories
-      const softwareStories = stories
-        .filter(story => !usedStoryIds.has(story.id))
-        .filter(story => 
-          story.source_name.toLowerCase().includes('engineering') ||
-          story.source_name.toLowerCase().includes('github') ||
-          story.source_name.toLowerCase().includes('stack') ||
-          story.tags.some(tag => tag.toLowerCase().includes('software') || 
-                              tag.toLowerCase().includes('programming') ||
-                              tag.toLowerCase().includes('development'))
-        )
-        .slice(0, 10)
-      newSections[1].stories = softwareStories
-      softwareStories.forEach(story => usedStoryIds.add(story.id))
-      
-      // Data Science stories - exclude already used stories
-      const dataStories = stories
-        .filter(story => !usedStoryIds.has(story.id))
-        .filter(story => 
-          story.tags.some(tag => tag.toLowerCase().includes('data') || 
-                              tag.toLowerCase().includes('analytics') ||
-                              tag.toLowerCase().includes('science') ||
-                              tag.toLowerCase().includes('ml') ||
-                              tag.toLowerCase().includes('ai'))
-        )
-        .slice(0, 10)
-      newSections[2].stories = dataStories
+      newSections[0].stories = row1Stories
+      newSections[1].stories = row2Stories
+      newSections[2].stories = row3Stories
       
       return newSections
     })
@@ -413,7 +546,31 @@ export default function FeedPage() {
   }
 
   return (
-    <div className="p-8">
+    <div className="p-8 relative min-h-screen">
+      {/* Personalization Loading Overlay - Fixed to top of main content area */}
+      {isPersonalizing && (
+        <div className="absolute inset-x-0 top-0 h-screen bg-white/95 backdrop-blur-sm z-50">
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center max-w-md px-6 -mt-20">
+              <div className="mb-8">
+                <div className="inline-flex items-center justify-center w-20 h-20 bg-primary/10 rounded-full mb-6">
+                  <RefreshCw className="w-10 h-10 text-primary animate-spin" />
+                </div>
+                <h2 className="text-3xl font-bold mb-4">Your personalized news agent is hard at work...</h2>
+                <p className="text-lg text-muted-foreground leading-relaxed">
+                  Analyzing your preferences, finding the most relevant stories, and ranking them just for you.
+                </p>
+              </div>
+              <div className="flex items-center justify-center space-x-3">
+                <div className="w-3 h-3 bg-primary rounded-full animate-pulse"></div>
+                <div className="w-3 h-3 bg-primary rounded-full animate-pulse" style={{animationDelay: '0.2s'}}></div>
+                <div className="w-3 h-3 bg-primary rounded-full animate-pulse" style={{animationDelay: '0.4s'}}></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <header className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-3xl font-bold">
@@ -437,7 +594,7 @@ export default function FeedPage() {
             </div>
           )}
         </div>
-        <Button variant="outline" onClick={fetchStories} disabled={loading}>
+        <Button variant="outline" onClick={() => fetchStories(true)} disabled={loading}>
           <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
           Refresh
         </Button>
@@ -500,5 +657,16 @@ export default function FeedPage() {
         />
       ))}
     </div>
+  )
+}
+
+export default function FeedPage() {
+  return (
+    <Suspense fallback={<div className="p-8 flex items-center justify-center">
+      <RefreshCw className="w-6 h-6 animate-spin mr-2" />
+      Loading...
+    </div>}>
+      <FeedPageContent />
+    </Suspense>
   )
 }
