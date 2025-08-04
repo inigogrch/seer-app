@@ -9,7 +9,8 @@ const inter = Inter({
   subsets: ["latin"], 
   variable: "--font-inter",
   display: 'swap',
-  fallback: ['system-ui', 'arial']
+  fallback: ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Arial', 'sans-serif'],
+  adjustFontFallback: false, // Prevent font adjustment issues
 })
 
 export const metadata: Metadata = {
