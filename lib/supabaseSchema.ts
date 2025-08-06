@@ -14,13 +14,15 @@ export interface DatabaseStory {
   updated_at: string
   story_category?: 'news' | 'tools' | 'research' | 'opinion' | 'announcement'
   tags: string[] // text[] array
-  embedding?: number[] // vector field
+  embedding?: number[] | string // vector field (can be array or string from Supabase)
   embedding_model?: string
   embedding_generated_at?: string
   original_metadata?: Record<string, unknown>
   tagging_metadata?: Record<string, unknown>
   source_id: number // foreign key to sources table
   source_name?: string
+  similarity_score?: number // cosine similarity score (0-1), calculated in TypeScript
+  llm_relevance_score?: number // LLM relevance score (0-100), from AI filtering stage
 }
 
 export interface DatabaseSource {

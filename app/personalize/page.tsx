@@ -128,7 +128,7 @@ export default function PersonalizePage() {
         return (
           <div className="text-center max-w-3xl mx-auto">
             <h1 className="text-3xl font-bold mb-2">Your tech interests</h1>
-            <p className="text-muted-foreground mb-8">Select the technologies and trends you want to follow</p>
+            <p className="text-muted-foreground mb-8">Select at least one technology or trend you want to follow</p>
             <Card className="p-6 bg-white">
               <div className="flex flex-wrap gap-3 justify-center mb-6">
                 {interests.map((interest) => (
@@ -168,11 +168,31 @@ export default function PersonalizePage() {
                 size="lg"
                 className="w-full mt-4"
                 onClick={() => {
+                  // Validation - ensure all required fields are filled
+                  const role = selectedRole || customRole
+                  const allInterests = [...selectedInterests, ...(otherInterests ? [otherInterests] : [])]
+                  
+                  // Validate required fields
+                  if (!role || !role.trim()) {
+                    alert('Please select or enter a role.')
+                    return
+                  }
+                  
+                  if (allInterests.length === 0) {
+                    alert('Please select at least one interest or add your own.')
+                    return
+                  }
+                  
+                  if (!projects || !projects.trim()) {
+                    alert('Please describe your current projects.')
+                    return
+                  }
+                  
                   // Save preferences to localStorage
                   const userPreferences = {
-                    role: selectedRole || customRole,
-                    interests: [...selectedInterests, ...(otherInterests ? [otherInterests] : [])],
-                    projects: projects,
+                    role: role.trim(),
+                    interests: allInterests,
+                    projects: projects.trim(),
                     timestamp: new Date().toISOString()
                   }
                   

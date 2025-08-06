@@ -7,9 +7,14 @@ export async function POST(request: NextRequest) {
     const userPreferences: UserPreferences = await request.json()
     
     // Validate required fields
-    if (!userPreferences.role || !userPreferences.interests || !userPreferences.projects) {
+    if (!userPreferences.role || 
+        !userPreferences.role.trim() ||
+        !userPreferences.interests || 
+        userPreferences.interests.length === 0 ||
+        !userPreferences.projects || 
+        !userPreferences.projects.trim()) {
       return NextResponse.json(
-        { success: false, error: 'Missing required user preference fields' },
+        { success: false, error: 'All fields are required: role, interests (at least 1), and projects must be filled out' },
         { status: 400 }
       )
     }
