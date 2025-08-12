@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, Suspense } from "react"
+import { useState, useEffect, useRef, Suspense, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,7 +8,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Send, Bot, User, RefreshCw, ArrowLeft } from "lucide-react"
 import Link from "next/link"
-import { useChat } from 'ai/react'
+import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 
 const suggestions = [
   "Give me a daily digest of AI breakthroughs",
@@ -56,11 +57,12 @@ const formatMessageContent = (content: string) => {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
     
-    if (line.startsWith('## ')) {
-      // Main headings
+    if (line.startsWith('## ') || line.startsWith('### ')) {
+      // Main headings (## or ###)
+      const headingText = line.replace(/^##+ /, '')
       elements.push(
         <h3 key={i} className="text-lg font-semibold mt-6 mb-3 text-gray-900 first:mt-0">
-          {line.replace('## ', '')}
+          {headingText}
         </h3>
       )
     } else if (line.startsWith('- ')) {
@@ -101,6 +103,7 @@ function ChatPageContent() {
   const [storyContext, setStoryContext] = useState<StoryContext | null>(null)
   const [isLoadingStory, setIsLoadingStory] = useState(!!storyId)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const hasTriggeredAnalysis = useRef<string | null>(null) // Track which story we've analyzed
 
   // Get user preferences from localStorage
   const getUserContext = () => {
@@ -112,44 +115,79 @@ function ChatPageContent() {
     }
   }
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, append } = useChat({
-    api: '/api/news-agent',
-    onError: (error) => {
+  const { 
+    messages, 
+    sendMessage,
+    status,
+    error,
+    setMessages
+  } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/news-agent'
+    }),
+    onError: (error: Error) => {
       console.error('Chat error:', error)
       console.error('Error details:', error.message)
       console.error('Full error:', error)
     },
-    body: {
-      storyId: storyId || undefined,
-      userContext: getUserContext()
-    },
-    onResponse: (response) => {
-      console.log('Chat response received:', response.status, response.statusText)
-    },
-    onFinish: (message) => {
-      console.log('Chat finished:', message.content.substring(0, 100))
+    onFinish: (message: any) => {
+      console.log('Chat finished successfully')
     }
   })
 
+  // Manually manage input state for form handling
+  const [input, setInput] = useState('')
+  const isLoading = status === 'streaming' || status === 'submitted'
+
+  // Form handlers
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(e.target.value)
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (input.trim() && !isLoading) {
+      sendMessage(
+        { text: input.trim() },
+        {
+          body: {
+            storyId: storyId || undefined,
+            userContext: getUserContext()
+          }
+        }
+      )
+      setInput('')
+    }
+  }
+
   // Auto-trigger story analysis when storyId is provided
   useEffect(() => {
-    if (storyId && messages.length === 0) {
+    if (storyId && hasTriggeredAnalysis.current !== storyId && !isLoading) {
       console.log('Auto-triggering story analysis for:', storyId)
       console.log('User context:', getUserContext())
+      
+      // Mark this story as analyzed to prevent re-triggering
+      hasTriggeredAnalysis.current = storyId
       setIsLoadingStory(false)
       
       // Auto-start the analysis
-      append({
-        id: `auto-analysis-${Date.now()}`,
-        role: 'user',
-        content: 'AUTO_ANALYZE' // Special marker for auto-analysis
-      })
+      sendMessage(
+        { text: 'AUTO_ANALYZE' },
+        {
+          body: {
+            storyId: storyId || undefined,
+            userContext: getUserContext()
+          }
+        }
+      )
     } else if (!storyId) {
+      // Reset when no story ID
+      hasTriggeredAnalysis.current = null
       setIsLoadingStory(false)
     } else {
-      console.log('Not auto-triggering:', { storyId, messagesLength: messages.length })
+      setIsLoadingStory(false)
     }
-  }, [storyId, messages.length, append])
+  }, [storyId, isLoading, sendMessage]) // Include sendMessage but use ref to prevent loops
 
   // Auto-scroll to bottom when new messages arrive (debounced)
   useEffect(() => {
@@ -160,18 +198,28 @@ function ChatPageContent() {
     return () => clearTimeout(timeoutId)
   }, [messages])
 
-  const handleSuggestionClick = (suggestion: string) => {
-    // Trigger chat with the suggestion
-    const syntheticEvent = {
-      preventDefault: () => {},
-      target: { elements: { message: { value: suggestion } } }
-    } as any
-    
-    handleInputChange({ target: { value: suggestion } } as any)
-    setTimeout(() => handleSubmit(syntheticEvent), 100)
-  }
+  const handleSuggestionClick = useCallback((suggestion: string) => {
+    if (!isLoading) {
+      sendMessage(
+        { text: suggestion },
+        {
+          body: {
+            storyId: storyId || undefined,
+            userContext: getUserContext()
+          }
+        }
+      )
+    }
+  }, [isLoading, sendMessage, storyId])
 
   const showWelcome = messages.length === 0 && !isLoadingStory
+  
+  // Auto-scroll when messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messages])
 
   return (
     <div className="flex flex-col h-full">
@@ -253,9 +301,16 @@ function ChatPageContent() {
         )}
 
         {messages
-          .filter(message => message.content !== 'AUTO_ANALYZE') // Hide auto-analysis trigger messages
-          .map((message) => (
-          <div key={message.id} className="flex gap-3">
+          .filter((message: any) => {
+            // Extract text from parts array
+            const messageText = message.parts?.[0]?.text || message.text || message.content || ''
+            return messageText !== 'AUTO_ANALYZE'
+          }) // Hide auto-analysis trigger messages
+          .map((message: any, index: number) => {
+            // Extract content from parts array
+            const messageContent = message.parts?.map((part: any) => part.text).join('') || message.text || message.content || ''
+            return (
+          <div key={`${message.id}-${index}`} className="flex gap-3">
             <div className="flex-shrink-0">
               {message.role === 'user' ? (
                 <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
@@ -270,14 +325,18 @@ function ChatPageContent() {
             <Card className="flex-1 max-w-3xl">
               <CardContent className="px-4 py-3">
                 <div className="prose prose-sm max-w-none text-gray-800">
-                  {formatMessageContent(message.content)}
+                  {formatMessageContent(messageContent)}
                 </div>
               </CardContent>
             </Card>
           </div>
-        ))}
+            )
+        })}
 
-        {isLoading && messages.filter(m => m.content !== 'AUTO_ANALYZE').length === 0 && (
+        {isLoading && messages.filter((m: any) => {
+          const messageText = m.parts?.[0]?.text || m.text || m.content || ''
+          return messageText !== 'AUTO_ANALYZE'
+        }).length === 0 && (
           <div className="flex gap-3">
             <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center">
               <Bot className="w-4 h-4 text-green-600" />

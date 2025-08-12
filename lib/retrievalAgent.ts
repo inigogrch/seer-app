@@ -54,7 +54,7 @@ export async function generateUserEmbedding(userPrefs: UserPreferences): Promise
     console.log('Generating embedding for preferences:', preferencesText.substring(0, 200))
 
     const { embedding } = await embed({
-      model: openai.embedding(CONFIG.EMBEDDING_MODEL),
+      model: openai.textEmbeddingModel(CONFIG.EMBEDDING_MODEL),
       value: preferencesText,
     })
 
