@@ -22,6 +22,7 @@ import {
   MessageSquare,
   BarChart,
   Cpu,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardFooter } from "@/components/ui/card"
@@ -103,10 +104,12 @@ const StoryCard = ({ story }: { story: Story }) => (
       <div className="h-[150px] mb-1 bg-gray-100 rounded-md flex items-center justify-center -mt-2.5 overflow-hidden">
         {(() => {
           const sourceName = story.source_name.toLowerCase()
+          
+          // ArXiv (both Computer Science and Statistics)
           if (sourceName.includes('arxiv')) {
             return (
               <Image 
-                src="/arxiv_logo.jpg" 
+                src="/ArXiv_logo_2022.png" 
                 alt="arXiv" 
                 width={150} 
                 height={150} 
@@ -114,6 +117,47 @@ const StoryCard = ({ story }: { story: Story }) => (
               />
             )
           }
+          
+          // OpenAI News
+          if (sourceName.includes('openai')) {
+            return (
+              <Image 
+                src="/OpenAI_Logo.svg" 
+                alt="OpenAI" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // TLDR Tech Newsletter
+          if (sourceName.includes('tldr')) {
+            return (
+              <Image 
+                src="/tldr-logo-jpg.jpg" 
+                alt="TLDR" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // Anthropic News
+          if (sourceName.includes('anthropic')) {
+            return (
+              <Image 
+                src="/Anthropic_logo.svg" 
+                alt="Anthropic" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // MIT (AI News and Tech Review)
           if (sourceName.includes('mit') && (sourceName.includes('data') || sourceName.includes('ai') || sourceName.includes('research'))) {
             return (
               <Image 
@@ -125,21 +169,64 @@ const StoryCard = ({ story }: { story: Story }) => (
               />
             )
           }
-          if (sourceName.includes('google') && sourceName.includes('research')) {
+          
+          // MIT Sloan Management Review
+          if (sourceName.includes('mit') && sourceName.includes('sloan')) {
             return (
               <Image 
-                src="/google_research_logo.jpg" 
-                alt="Google Research" 
+                src="/mit_sloan_review.png" 
+                alt="MIT Sloan Management Review" 
                 width={150} 
                 height={150} 
                 className="w-full h-full object-contain p-4"
               />
             )
           }
+          
+          // TechCrunch
+          if (sourceName.includes('techcrunch')) {
+            return (
+              <Image 
+                src="/techchrunch.svg" 
+                alt="TechCrunch" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // VentureBeat
+          if (sourceName.includes('venturebeat')) {
+            return (
+              <Image 
+                src="/VentureBeat_VB_Logo.png" 
+                alt="VentureBeat" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // Google Research Blog
+          if (sourceName.includes('google') && sourceName.includes('research')) {
+            return (
+              <Image 
+                src="/Google_2015_logo.svg.webp" 
+                alt="Google Research" 
+                width={1500} 
+                height={1500} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // AWS Machine Learning Blog
           if (sourceName.includes('aws') && (sourceName.includes('machine learning') || sourceName.includes('ml'))) {
             return (
               <Image 
-                src="/aws_logo.png" 
+                src="/Amazon_Web_Services_Logo.svg.webp" 
                 alt="AWS Machine Learning Blog" 
                 width={150} 
                 height={150} 
@@ -147,6 +234,7 @@ const StoryCard = ({ story }: { story: Story }) => (
               />
             )
           }
+          
           // Default placeholder for other sources
           return <span className="text-gray-400">Story Image</span>
         })()}
@@ -287,35 +375,32 @@ function FeedPageContent() {
         }
       }
       
-      // If we have user preferences, check for cached stories first
+      // If we have user preferences, ONLY use cached personalized stories
       if (userPrefs) {
         // Check for cached personalized stories
         const cachedStories = localStorage.getItem('personalized_stories')
-        const cacheTimestamp = localStorage.getItem('personalized_stories_timestamp')
         
-        if (!forceRefresh && cachedStories && cacheTimestamp && !isPersonalizingFromUrl) {
+        if (cachedStories && !isPersonalizingFromUrl) {
           try {
             const stories = JSON.parse(cachedStories)
-            const timestamp = parseInt(cacheTimestamp)
-            const cacheAge = Date.now() - timestamp
-            const cacheExpiryMs = 30 * 60 * 1000 // 30 minutes
-            
-            // Use cached stories if they're less than 30 minutes old
-            if (cacheAge < cacheExpiryMs && stories.length > 0) {
-              console.log('Using cached personalized stories')
+            if (stories.length > 0) {
+              console.log('Loading persistent personalized stories')
               loadCachedPersonalizedStories(stories)
               return
-            } else {
-              console.log('Cached stories expired, fetching fresh ones')
             }
           } catch (e) {
             console.error('Failed to parse cached stories:', e)
           }
         }
         
-        // Fetch fresh personalized stories
-        await fetchPersonalizedStories(userPrefs)
-        return
+        // If personalizing from onboarding, run the agent
+        if (isPersonalizingFromUrl) {
+          await fetchPersonalizedStories(userPrefs)
+          return
+        }
+        
+        // Otherwise, fall back to general feed (no cached personalized stories found)
+        console.log('No personalized stories found, showing general feed')
       }
       
       // Otherwise, fetch regular feed
@@ -474,6 +559,22 @@ function FeedPageContent() {
     }
   }
   
+  const clearUserPreferences = () => {
+    // Clear all personalization data
+    localStorage.removeItem('user_preferences')
+    localStorage.removeItem('personalized_stories')
+    localStorage.removeItem('personalized_stories_timestamp')
+    
+    // Reset state
+    setUserPreferences(null)
+    setIsPersonalized(false)
+    
+    // Fetch general feed
+    fetchStories()
+    
+    console.log('User preferences cleared, returned to general feed')
+  }
+  
   const fetchRegularStories = async () => {
     const { data, error } = await supabase
       .from("stories")
@@ -530,6 +631,7 @@ function FeedPageContent() {
   useEffect(() => {
     fetchStories()
     const interval = setInterval(fetchStories, 300000) // Fetch every 5 minutes
+    
     return () => clearInterval(interval)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -547,10 +649,10 @@ function FeedPageContent() {
 
   return (
     <div className="p-8 relative min-h-screen">
-      {/* Personalization Loading Overlay - Fixed to top of main content area */}
+      {/* Personalization Loading Overlay - Covers entire content area */}
       {isPersonalizing && (
-        <div className="absolute inset-x-0 top-0 h-screen bg-white/95 backdrop-blur-sm z-50">
-          <div className="flex items-center justify-center h-full">
+        <div className="absolute inset-0 bg-white/95 backdrop-blur-sm z-[9999] min-h-screen">
+          <div className="flex items-center justify-center h-screen sticky top-0">
             <div className="text-center max-w-md px-6 -mt-20">
               <div className="mb-8">
                 <div className="inline-flex items-center justify-center w-20 h-20 bg-primary/10 rounded-full mb-6">
@@ -594,10 +696,26 @@ function FeedPageContent() {
             </div>
           )}
         </div>
-        <Button variant="outline" onClick={() => fetchStories(true)} disabled={loading}>
-          <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => fetchStories(true)} disabled={loading}>
+            <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button 
+            variant="outline" 
+            onClick={clearUserPreferences} 
+            disabled={!userPreferences}
+            className={cn(
+              "transition-colors",
+              userPreferences 
+                ? "text-red-600 hover:text-red-700 hover:bg-red-50" 
+                : "text-gray-400"
+            )}
+          >
+            <X className="w-4 h-4 mr-2" />
+            Clear Preferences
+          </Button>
+        </div>
       </header>
 
       <div className="mb-6">
@@ -620,6 +738,7 @@ function FeedPageContent() {
             <DropdownMenuItem>Category 1</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Impact filter temporarily commented out
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="bg-white">
@@ -630,6 +749,7 @@ function FeedPageContent() {
             <DropdownMenuItem>Impact 1</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="bg-white">

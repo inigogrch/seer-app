@@ -10,31 +10,31 @@ const CONFIG = {
   EMBEDDING_MODEL: 'text-embedding-3-small',
   LLM_MODEL: 'gpt-4o-mini',
   MATCH_THRESHOLD: 0.4, // Balanced threshold for good matches
-  TOP_K_CANDIDATES: 50, // Smaller pool for better latency
-  MAX_PER_SOURCE: 5, // Maximum stories per source for diversity
+  TOP_K_CANDIDATES: 30, // Pool for LLM filtering - reduced for better latency
+  MAX_PER_SOURCE: 3, // Maximum stories per source for diversity - reduced for faster processing
   FINAL_RESULTS_LIMIT: 30, // Final results for 3-row grid layout
   FRESHNESS_DECAY_DAYS: 14, // Days for freshness bias calculation
   BLOCKLISTED_SOURCES: [] as string[], // Source names to exclude
-  // Relative scoring range after LLM reranking
-  RELATIVE_SCORE_MIN: 70, // Minimum relative score
-  RELATIVE_SCORE_MAX: 100, // Maximum relative score
+  // Hybrid scaled scoring - point-based system for human-sensible scores
+  LLM_BASE_POINTS: 70, // 0-70 points from LLM relevance (primary signal)
+  INTEREST_MATCH_POINTS: 15, // 0-15 points for direct interest matches
+  ROLE_RELEVANCE_POINTS: 10, // 0-10 points for role relevance
+  RECENCY_BOOST_POINTS: 5, // 0-5 points for recency boost
+  // Total possible: 100 points
+  LLM_FILTER_TOP_K: 30, // Top stories to keep after LLM filtering - aligned with candidates
 }
 
 // Enhanced Story interface with personalization fields
 export interface PersonalizedStory extends Omit<DatabaseStory, 'embedding'> {
   relevance_score: number
-  summary: string
-  explanation: string
   time?: string // Relative time string for UI
 }
 
-// LLM response schema for structured output
-const StoryRankingSchema = z.object({
+// LLM response schema for relevance filtering
+const StoryRelevanceSchema = z.object({
   rankings: z.array(z.object({
     story_id: z.string(),
     relevance_score: z.number().min(0).max(100),
-    summary: z.string().describe('Up to 3 concise sentences summarizing the story\'s relevance'),
-    explanation: z.string().describe('2-3 sentences justifying the relevance score'),
   }))
 })
 
@@ -53,7 +53,7 @@ export async function generateUserEmbedding(userPrefs: UserPreferences): Promise
     console.log('Generating embedding for preferences:', preferencesText.substring(0, 200))
 
     const { embedding } = await embed({
-      model: openai.embedding(CONFIG.EMBEDDING_MODEL),
+      model: openai.textEmbeddingModel(CONFIG.EMBEDDING_MODEL),
       value: preferencesText,
     })
 
@@ -65,7 +65,7 @@ export async function generateUserEmbedding(userPrefs: UserPreferences): Promise
 }
 
 /**
- * Retrieve candidate stories using Supabase hybrid search function
+ * Retrieve candidate stories using Supabase hybrid search function and calculate similarity scores
  */
 export async function retrieveCandidateStories(
   userEmbedding: number[],
@@ -83,11 +83,168 @@ export async function retrieveCandidateStories(
       throw error
     }
 
-    console.log(`Retrieved ${data?.length || 0} candidate stories from hybrid search`)
-    return data || []
+    // Calculate similarity scores for each story
+    const stories = (data || []) as DatabaseStory[]
+    console.log(`Processing ${stories.length} stories for similarity calculation`)
+    
+    const storiesWithSimilarity = stories.map((story: DatabaseStory, index: number) => {
+      if (!story.embedding) {
+        return { ...story, similarity_score: 0 }
+      }
+      
+      // Parse embedding if it's a string (common with Supabase vector data)
+      let storyEmbedding: number[]
+      if (typeof story.embedding === 'string') {
+        try {
+          // Remove brackets and split by comma, then parse as numbers
+          const embeddingStr = story.embedding.replace(/[\[\]]/g, '')
+          storyEmbedding = embeddingStr.split(',').map(val => parseFloat(val.trim()))
+          // Parsed successfully
+        } catch (e) {
+          console.error(`Failed to parse embedding string for story ${index}:`, e)
+          return { ...story, similarity_score: 0 }
+        }
+      } else if (Array.isArray(story.embedding)) {
+        storyEmbedding = story.embedding
+        // Array embedding found
+      } else {
+        console.warn(`Story has unknown embedding type: ${typeof story.embedding}`)
+        return { ...story, similarity_score: 0 }
+      }
+      
+      // Validate embedding array
+      if (!Array.isArray(storyEmbedding) || storyEmbedding.length === 0 || storyEmbedding.some(isNaN)) {
+        return { ...story, similarity_score: 0 }
+      }
+      
+      // Calculate cosine similarity from embeddings
+      const similarity = calculateCosineSimilarity(userEmbedding, storyEmbedding)
+      
+      return {
+        ...story,
+        similarity_score: Math.max(0, Math.min(1, similarity)) // Clamp to [0,1]
+      }
+    })
+
+    console.log(`Retrieved ${storiesWithSimilarity.length} candidate stories with similarity scores`)
+    return storiesWithSimilarity
   } catch (error) {
     console.error('Candidate retrieval failed:', error)
     throw new Error('Failed to retrieve candidate stories')
+  }
+}
+
+/**
+ * Calculate cosine similarity between two vectors
+ */
+function calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
+  if (vecA.length !== vecB.length) {
+    console.warn(`Vector dimensions mismatch: ${vecA.length} vs ${vecB.length}`)
+    return 0
+  }
+
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i]
+    normA += vecA[i] * vecA[i]
+    normB += vecB[i] * vecB[i]
+  }
+
+  normA = Math.sqrt(normA)
+  normB = Math.sqrt(normB)
+
+  // Cosine similarity calculation
+
+  if (normA === 0 || normB === 0) {
+    console.warn('One of the vectors has zero norm')
+    return 0
+  }
+
+  const similarity = dotProduct / (normA * normB)
+  return similarity
+}
+
+/**
+ * LLM-based relevance filtering - Stage 2 of hybrid pipeline
+ */
+export async function filterByLLMRelevance(
+  userPrefs: UserPreferences,
+  stories: DatabaseStory[]
+): Promise<DatabaseStory[]> {
+  try {
+    // Prepare stories context for LLM evaluation
+    const storiesContext = stories.map((story, index) => 
+      `Story ${index + 1} (ID: ${story.id}):
+Title: ${story.title}
+Content: ${(story.content || '').substring(0, 300)}...
+Tags: ${story.tags.join(', ')}
+Source: ${story.source_name}
+Published: ${new Date(story.published_at).toLocaleDateString()}`
+    ).join('\n\n')
+
+    const prompt = `You are a personal news assistant. Evaluate these ${stories.length} stories for a ${userPrefs.role} with these preferences:
+
+INTERESTS: ${userPrefs.interests.join(', ')}
+CURRENT PROJECTS: ${userPrefs.projects}
+
+For each story, provide ONLY a relevance_score (0-100) based on how well it matches their interests, role, and projects.
+
+Score highly (70-100) stories that:
+- Directly relate to their stated interests and current projects
+- Provide actionable insights for their professional role
+- Offer new developments, tools, or techniques in their field
+- Could impact their current work or career development
+
+Score moderately (30-69) stories that are somewhat related but not central to their interests.
+Score low (0-29) stories that are not relevant to their profile.
+
+Evaluate ALL ${stories.length} stories and return scores for each.
+
+STORIES:
+${storiesContext}`
+
+    console.log(`Sending ${stories.length} stories to LLM for relevance filtering...`)
+
+    const { object } = await generateObject({
+      model: openai(CONFIG.LLM_MODEL),
+      schema: StoryRelevanceSchema,
+      prompt,
+      temperature: 0.1,
+    })
+    
+    // Map LLM scores back to stories and sort by relevance
+    const storyMap = new Map(stories.map(s => [s.id, s]))
+    const scoredStories = object.rankings
+      .map(ranking => ({
+        story: storyMap.get(ranking.story_id),
+        llm_relevance_score: ranking.relevance_score
+      }))
+      .filter(item => item.story) // Remove stories not found
+      .sort((a, b) => b.llm_relevance_score - a.llm_relevance_score) // Sort by LLM score
+      .slice(0, CONFIG.LLM_FILTER_TOP_K) // Take top 50
+    
+    // Add LLM relevance score to story objects
+    const filteredStories = scoredStories.map(item => ({
+      ...item.story!,
+      llm_relevance_score: item.llm_relevance_score
+    }))
+
+    console.log(`LLM filtered ${stories.length} stories down to ${filteredStories.length} most relevant`)
+    console.log(`Top 3 LLM scores: ${scoredStories.slice(0, 3).map(s => s.llm_relevance_score).join(', ')}`)
+    
+    return filteredStories
+    
+  } catch (error) {
+    console.error('LLM relevance filtering failed:', error)
+    // Fallback: return top stories based on similarity scores
+    console.log('Using similarity fallback for relevance filtering')
+    return stories
+      .sort((a, b) => (b.similarity_score || 0) - (a.similarity_score || 0))
+      .slice(0, CONFIG.LLM_FILTER_TOP_K)
+      .map(story => ({ ...story, llm_relevance_score: 50 })) // Default score
   }
 }
 
@@ -146,140 +303,110 @@ export function applyBusinessConstraints(stories: DatabaseStory[]): DatabaseStor
   })
 }
 
-/**
- * Use LLM to rerank and annotate stories with structured output
- */
-export async function rerank(
-  userPrefs: UserPreferences,
-  stories: DatabaseStory[]
-): Promise<{ story: DatabaseStory; relevance_score: number; summary: string; explanation: string }[]> {
-  try {
-    // Prepare stories context for LLM
-    const storiesContext = stories.map((story, index) => 
-      `Story ${index + 1} (ID: ${story.id}):
-Title: ${story.title}
-Content: ${(story.content || '').substring(0, 400)}...
-Tags: ${story.tags.join(', ')}
-Source: ${story.source_name}
-Published: ${new Date(story.published_at).toLocaleDateString()}`
-    ).join('\n\n')
-
-    const prompt = `You are a personal news assistant. Analyze the following stories for a ${userPrefs.role} with these preferences:
-
-INTERESTS: ${userPrefs.interests.join(', ')}
-CURRENT PROJECTS: ${userPrefs.projects}
-
-For each relevant story, provide:
-1. relevance_score (0-100): How well this story matches their interests, role, and projects
-2. summary (up to 3 sentences): Concise explanation of the story's relevance and key insights
-3. explanation (2-3 sentences): Detailed justification for the relevance score
-
-Prioritize stories that:
-- Directly relate to their stated interests and current projects
-- Provide actionable insights for their professional role
-- Offer new developments, tools, or techniques in their field
-- Could impact their current work or career development
-
-Rank ALL provided stories by relevance. We will select the top 30 for the final feed.
-
-STORIES:
-${storiesContext}`
-
-    console.log('Sending stories to LLM for reranking...')
-
-    const { object } = await generateObject({
-      model: openai(CONFIG.LLM_MODEL),
-      schema: StoryRankingSchema,
-      prompt,
-      temperature: 0.1, // Low temperature for consistent rankings
-    })
-    
-    // LOG: Raw LLM reasoning output for debugging
-    console.log('=== LLM REASONING OUTPUT ===')
-    object.rankings.slice(0, 5).forEach((ranking, i) => {
-      console.log(`${i + 1}. Story: ${ranking.story_id}`)
-      console.log(`   Score: ${ranking.relevance_score}`)
-      console.log(`   Summary: ${ranking.summary}`)
-      console.log(`   Explanation: ${ranking.explanation}`)
-      console.log('---')
-    })
-    console.log('=== END LLM OUTPUT ===')
-
-    // Map rankings back to stories
-    const storyMap = new Map(stories.map(s => [s.id, s]))
-    
-    // Process all LLM rankings and ensure uniqueness
-    const seenStoryIds = new Set<string>()
-    const llmRankedResults = object.rankings
-      .map(ranking => {
-        const story = storyMap.get(ranking.story_id)
-        if (!story) {
-          console.warn(`Story not found for ID: ${ranking.story_id}`)
-          return null
-        }
-        
-        // Check for duplicates
-        if (seenStoryIds.has(story.id)) {
-          console.warn(`Duplicate story in LLM rankings: ${story.id}`)
-          return null
-        }
-        seenStoryIds.add(story.id)
-        
-        return {
-          story,
-          original_relevance_score: ranking.relevance_score, // Keep original for reference
-          summary: ranking.summary,
-          explanation: ranking.explanation,
-        }
-      })
-      .filter(Boolean) // Remove null entries
-      .sort((a, b) => b!.original_relevance_score - a!.original_relevance_score) // Sort by LLM relevance
-      .slice(0, CONFIG.FINAL_RESULTS_LIMIT) // Take top 30
-    
-    // Apply relative scoring: map positions 0-29 to scores between RELATIVE_SCORE_MAX and RELATIVE_SCORE_MIN
-    const rankedResults = llmRankedResults.map((result, index) => {
-      // Calculate relative score: best story gets max score, worst gets min score
-      // Use a slight curve to make top stories more distinct
-      const position = index / (CONFIG.FINAL_RESULTS_LIMIT - 1) // 0 to 1
-      const curvedPosition = Math.pow(position, 0.8) // Slight curve favoring top stories
-      const relativeScore = Math.round(
-        CONFIG.RELATIVE_SCORE_MAX - (curvedPosition * (CONFIG.RELATIVE_SCORE_MAX - CONFIG.RELATIVE_SCORE_MIN))
-      )
-      
-      return {
-        story: result!.story,
-        relevance_score: relativeScore,
-        summary: result!.summary,
-        explanation: result!.explanation,
-      }
-    })
-
-    console.log(`Applied relative scoring to ${rankedResults.length} stories (${CONFIG.RELATIVE_SCORE_MIN}-${CONFIG.RELATIVE_SCORE_MAX})`)
-    return rankedResults as { story: DatabaseStory; relevance_score: number; summary: string; explanation: string }[]
-    
-  } catch (error) {
-    console.error('LLM reranking failed:', error)
-    
-    // Fallback: return exactly 30 stories with relative scoring
-    console.log('Using fallback ranking due to LLM failure')
-    const fallbackStories = stories.slice(0, CONFIG.FINAL_RESULTS_LIMIT)
-    return fallbackStories.map((story, index) => {
-      // Apply same relative scoring logic as successful LLM path
-      const position = index / (CONFIG.FINAL_RESULTS_LIMIT - 1)
-      const curvedPosition = Math.pow(position, 0.8)
-      const relativeScore = Math.round(
-        CONFIG.RELATIVE_SCORE_MAX - (curvedPosition * (CONFIG.RELATIVE_SCORE_MAX - CONFIG.RELATIVE_SCORE_MIN))
-      )
-      
-      return {
-        story,
-        relevance_score: relativeScore,
-        summary: 'This story appears relevant to your interests based on semantic similarity.',
-        explanation: 'Story was selected using semantic search but could not be analyzed in detail due to processing limitations.',
-      }
-    })
+interface ScoredStory {
+  story: DatabaseStory
+  relevance_score: number
+  debug_scores: {
+    llmRelevance: number
+    similarity: number
+    freshness: number
+    tagRelevance: number
+    contentRelevance: number
   }
 }
+
+/**
+ * Calculate human-sensible relevance scores using hybrid scaled approach
+ */
+export function calculateRelevanceScores(
+  userPrefs: UserPreferences,
+  stories: DatabaseStory[]
+): { story: DatabaseStory; relevance_score: number }[] {
+  const now = new Date()
+  
+  const scoredStories: ScoredStory[] = stories.map((story: DatabaseStory) => {
+    // Component 1: LLM Relevance (0-70 points) - Primary signal
+    const llmScore = story.llm_relevance_score || 50
+    const llmPoints = Math.round((llmScore / 100) * CONFIG.LLM_BASE_POINTS)
+    
+    // Component 2: Direct Interest Match (0-15 points) - Obvious relevance
+    const userInterests = userPrefs.interests.map(i => i.toLowerCase())
+    const storyTags = story.tags.map(t => t.toLowerCase())
+    const directMatches = storyTags.filter(tag => 
+      userInterests.some(interest => 
+        tag.includes(interest) || interest.includes(tag)
+      )
+    ).length
+    const interestPoints = Math.min(CONFIG.INTEREST_MATCH_POINTS, directMatches * 3) // 3 points per match, max 15
+    
+    // Component 3: Role Relevance (0-10 points) - Professional relevance
+    const contentText = `${story.title} ${story.content || ''} ${story.summary || ''}`.toLowerCase()
+    const roleMatch = contentText.includes(userPrefs.role.toLowerCase())
+    const projectTerms = userPrefs.projects.toLowerCase().split(/\s+/).filter(word => word.length > 3)
+    const projectMatches = projectTerms.filter(term => contentText.includes(term)).length
+    let rolePoints = 0
+    if (roleMatch) rolePoints += 5
+    rolePoints += Math.min(5, projectMatches * 1) // 1 point per project term, max 5
+    rolePoints = Math.min(CONFIG.ROLE_RELEVANCE_POINTS, rolePoints)
+    
+    // Component 4: Recency Boost (0-5 points) - Slight preference for fresh content
+    const publishedDate = new Date(story.published_at)
+    const ageInDays = (now.getTime() - publishedDate.getTime()) / (1000 * 60 * 60 * 24)
+    const recencyPoints = Math.round(
+      Math.max(0, (1 - (ageInDays / CONFIG.FRESHNESS_DECAY_DAYS)) * CONFIG.RECENCY_BOOST_POINTS)
+    )
+    
+    // Final score: Sum all components (max 100 points)
+    const finalScore = Math.max(1, Math.min(100, llmPoints + interestPoints + rolePoints + recencyPoints))
+    
+    return {
+      story,
+      relevance_score: finalScore,
+      debug_scores: {
+        llmRelevance: llmPoints / CONFIG.LLM_BASE_POINTS, // normalize for compatibility
+        similarity: story.similarity_score || 0, // keep original for debugging
+        freshness: recencyPoints / CONFIG.RECENCY_BOOST_POINTS,
+        tagRelevance: interestPoints / CONFIG.INTEREST_MATCH_POINTS,
+        contentRelevance: rolePoints / CONFIG.ROLE_RELEVANCE_POINTS,
+      }
+    }
+  })
+  
+  // Sort by relevance score and take top results
+  const sortedStories = scoredStories
+    .sort((a, b) => b.relevance_score - a.relevance_score)
+    .slice(0, CONFIG.FINAL_RESULTS_LIMIT)
+  
+  // Log top scoring stories with point breakdown for debugging
+  console.log('=== TOP RELEVANCE SCORES (Point-Based) ===')
+  sortedStories.slice(0, 5).forEach((item, i) => {
+    const llmPoints = Math.round(item.debug_scores.llmRelevance * CONFIG.LLM_BASE_POINTS)
+    const interestPoints = Math.round(item.debug_scores.tagRelevance * CONFIG.INTEREST_MATCH_POINTS)
+    const rolePoints = Math.round(item.debug_scores.contentRelevance * CONFIG.ROLE_RELEVANCE_POINTS)
+    const recencyPoints = Math.round(item.debug_scores.freshness * CONFIG.RECENCY_BOOST_POINTS)
+    
+    console.log(`${i + 1}. ${item.story.title.substring(0, 60)}...`)
+    console.log(`   Final Score: ${item.relevance_score}/100`)
+    console.log(`   Points: LLM=${llmPoints}/${CONFIG.LLM_BASE_POINTS}, Interest=${interestPoints}/${CONFIG.INTEREST_MATCH_POINTS}, Role=${rolePoints}/${CONFIG.ROLE_RELEVANCE_POINTS}, Recency=${recencyPoints}/${CONFIG.RECENCY_BOOST_POINTS}`)
+    console.log('---')
+  })
+  console.log('=== END RELEVANCE SCORES ===')
+  
+  return sortedStories.map(({ story, relevance_score }) => ({ story, relevance_score }))
+}
+
+// LEGACY: LLM-based reranking (kept for optional future use)
+// This function is no longer used in the main pipeline but kept as a fallback option
+/*
+export async function legacyLLMRerank(
+  userPrefs: UserPreferences,
+  stories: DatabaseStory[]
+): Promise<{ story: DatabaseStory; relevance_score: number }[]> {
+  // ... (LLM reranking implementation) ...
+  // Note: This approach was replaced with calculateRelevanceScores for better performance
+  // and more transparent, configurable scoring logic
+}
+*/
 
 /**
  * Main retrieval agent function - orchestrates the entire pipeline
@@ -304,22 +431,23 @@ export async function retrievePersonalizedStories(
       return []
     }
     
-    // Step 3: Apply business constraints
-    const constrainedStories = applyBusinessConstraints(candidateStories)
+    // Step 3: LLM relevance filtering (100 -> 50 stories)
+    const llmFilteredStories = await filterByLLMRelevance(userPrefs, candidateStories)
+    
+    // Step 4: Apply business constraints
+    const constrainedStories = applyBusinessConstraints(llmFilteredStories)
     console.log(`Applied constraints: ${constrainedStories.length} stories remain`)
     
-    // Step 4: LLM reranking and annotation
-    const rankedResults = await rerank(userPrefs, constrainedStories)
+    // Step 5: Calculate hybrid relevance scores (LLM + heuristics)
+    const rankedResults = calculateRelevanceScores(userPrefs, constrainedStories)
     
-    // Step 5: Transform to PersonalizedStory format
+    // Step 6: Transform to PersonalizedStory format
     const personalizedStories: PersonalizedStory[] = rankedResults.map(result => {
-      const { story, relevance_score, summary, explanation } = result
+      const { story, relevance_score } = result
       
       return {
         ...story,
         relevance_score,
-        summary,
-        explanation,
         time: getRelativeTime(story.published_at),
       }
     })
