@@ -104,10 +104,12 @@ const StoryCard = ({ story }: { story: Story }) => (
       <div className="h-[150px] mb-1 bg-gray-100 rounded-md flex items-center justify-center -mt-2.5 overflow-hidden">
         {(() => {
           const sourceName = story.source_name.toLowerCase()
+          
+          // ArXiv (both Computer Science and Statistics)
           if (sourceName.includes('arxiv')) {
             return (
               <Image 
-                src="/arxiv_logo.jpg" 
+                src="/ArXiv_logo_2022.png" 
                 alt="arXiv" 
                 width={150} 
                 height={150} 
@@ -115,6 +117,47 @@ const StoryCard = ({ story }: { story: Story }) => (
               />
             )
           }
+          
+          // OpenAI News
+          if (sourceName.includes('openai')) {
+            return (
+              <Image 
+                src="/OpenAI_Logo.svg" 
+                alt="OpenAI" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // TLDR Tech Newsletter
+          if (sourceName.includes('tldr')) {
+            return (
+              <Image 
+                src="/tldr-logo-jpg.jpg" 
+                alt="TLDR" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // Anthropic News
+          if (sourceName.includes('anthropic')) {
+            return (
+              <Image 
+                src="/Anthropic_logo.svg" 
+                alt="Anthropic" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // MIT (AI News and Tech Review)
           if (sourceName.includes('mit') && (sourceName.includes('data') || sourceName.includes('ai') || sourceName.includes('research'))) {
             return (
               <Image 
@@ -126,21 +169,64 @@ const StoryCard = ({ story }: { story: Story }) => (
               />
             )
           }
-          if (sourceName.includes('google') && sourceName.includes('research')) {
+          
+          // MIT Sloan Management Review
+          if (sourceName.includes('mit') && sourceName.includes('sloan')) {
             return (
               <Image 
-                src="/google_research_logo.jpg" 
-                alt="Google Research" 
+                src="/mit_sloan_review.png" 
+                alt="MIT Sloan Management Review" 
                 width={150} 
                 height={150} 
                 className="w-full h-full object-contain p-4"
               />
             )
           }
+          
+          // TechCrunch
+          if (sourceName.includes('techcrunch')) {
+            return (
+              <Image 
+                src="/techchrunch.svg" 
+                alt="TechCrunch" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // VentureBeat
+          if (sourceName.includes('venturebeat')) {
+            return (
+              <Image 
+                src="/VentureBeat_VB_Logo.png" 
+                alt="VentureBeat" 
+                width={150} 
+                height={150} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // Google Research Blog
+          if (sourceName.includes('google') && sourceName.includes('research')) {
+            return (
+              <Image 
+                src="/Google_2015_logo.svg.webp" 
+                alt="Google Research" 
+                width={1500} 
+                height={1500} 
+                className="w-full h-full object-contain p-4"
+              />
+            )
+          }
+          
+          // AWS Machine Learning Blog
           if (sourceName.includes('aws') && (sourceName.includes('machine learning') || sourceName.includes('ml'))) {
             return (
               <Image 
-                src="/aws_logo.png" 
+                src="/Amazon_Web_Services_Logo.svg.webp" 
                 alt="AWS Machine Learning Blog" 
                 width={150} 
                 height={150} 
@@ -148,6 +234,7 @@ const StoryCard = ({ story }: { story: Story }) => (
               />
             )
           }
+          
           // Default placeholder for other sources
           return <span className="text-gray-400">Story Image</span>
         })()}
@@ -651,6 +738,7 @@ function FeedPageContent() {
             <DropdownMenuItem>Category 1</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Impact filter temporarily commented out
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="bg-white">
@@ -661,6 +749,7 @@ function FeedPageContent() {
             <DropdownMenuItem>Impact 1</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="bg-white">
