@@ -15,12 +15,9 @@ const CONFIG = {
   FINAL_RESULTS_LIMIT: 30, // Final results for 3-row grid layout
   FRESHNESS_DECAY_DAYS: 14, // Days for freshness bias calculation
   BLOCKLISTED_SOURCES: [] as string[], // Source names to exclude
-  // Hybrid scaled scoring - point-based system for human-sensible scores
-  LLM_BASE_POINTS: 70, // 0-70 points from LLM relevance (primary signal)
-  INTEREST_MATCH_POINTS: 15, // 0-15 points for direct interest matches
-  ROLE_RELEVANCE_POINTS: 10, // 0-10 points for role relevance
-  RECENCY_BOOST_POINTS: 5, // 0-5 points for recency boost
-  // Total possible: 100 points
+  // Simplified LLM-only scoring - clean and non-redundant
+  RECENCY_BOOST_POINTS: 5, // 0-5 points for slight recency preference
+  // LLM handles all relevance scoring (0-100), recency adds small boost
   LLM_FILTER_TOP_K: 30, // Top stories to keep after LLM filtering - aligned with candidates
 }
 
@@ -316,7 +313,7 @@ interface ScoredStory {
 }
 
 /**
- * Calculate human-sensible relevance scores using hybrid scaled approach
+ * Calculate clean relevance scores using LLM intelligence + minimal recency boost
  */
 export function calculateRelevanceScores(
   userPrefs: UserPreferences,
@@ -325,49 +322,28 @@ export function calculateRelevanceScores(
   const now = new Date()
   
   const scoredStories: ScoredStory[] = stories.map((story: DatabaseStory) => {
-    // Component 1: LLM Relevance (0-70 points) - Primary signal
+    // Primary score: LLM relevance (0-100) - handles all user preference matching
     const llmScore = story.llm_relevance_score || 50
-    const llmPoints = Math.round((llmScore / 100) * CONFIG.LLM_BASE_POINTS)
     
-    // Component 2: Direct Interest Match (0-15 points) - Obvious relevance
-    const userInterests = userPrefs.interests.map(i => i.toLowerCase())
-    const storyTags = story.tags.map(t => t.toLowerCase())
-    const directMatches = storyTags.filter(tag => 
-      userInterests.some(interest => 
-        tag.includes(interest) || interest.includes(tag)
-      )
-    ).length
-    const interestPoints = Math.min(CONFIG.INTEREST_MATCH_POINTS, directMatches * 3) // 3 points per match, max 15
-    
-    // Component 3: Role Relevance (0-10 points) - Professional relevance
-    const contentText = `${story.title} ${story.content || ''} ${story.summary || ''}`.toLowerCase()
-    const roleMatch = contentText.includes(userPrefs.role.toLowerCase())
-    const projectTerms = userPrefs.projects.toLowerCase().split(/\s+/).filter(word => word.length > 3)
-    const projectMatches = projectTerms.filter(term => contentText.includes(term)).length
-    let rolePoints = 0
-    if (roleMatch) rolePoints += 5
-    rolePoints += Math.min(5, projectMatches * 1) // 1 point per project term, max 5
-    rolePoints = Math.min(CONFIG.ROLE_RELEVANCE_POINTS, rolePoints)
-    
-    // Component 4: Recency Boost (0-5 points) - Slight preference for fresh content
+    // Small recency boost (0-5 points) - slight preference for fresh content
     const publishedDate = new Date(story.published_at)
     const ageInDays = (now.getTime() - publishedDate.getTime()) / (1000 * 60 * 60 * 24)
-    const recencyPoints = Math.round(
+    const recencyBoost = Math.round(
       Math.max(0, (1 - (ageInDays / CONFIG.FRESHNESS_DECAY_DAYS)) * CONFIG.RECENCY_BOOST_POINTS)
     )
     
-    // Final score: Sum all components (max 100 points)
-    const finalScore = Math.max(1, Math.min(100, llmPoints + interestPoints + rolePoints + recencyPoints))
+    // Final score: LLM score + small recency boost (max 105, but clamp to 100)
+    const finalScore = Math.max(1, Math.min(100, llmScore + recencyBoost))
     
     return {
       story,
       relevance_score: finalScore,
       debug_scores: {
-        llmRelevance: llmPoints / CONFIG.LLM_BASE_POINTS, // normalize for compatibility
-        similarity: story.similarity_score || 0, // keep original for debugging
-        freshness: recencyPoints / CONFIG.RECENCY_BOOST_POINTS,
-        tagRelevance: interestPoints / CONFIG.INTEREST_MATCH_POINTS,
-        contentRelevance: rolePoints / CONFIG.ROLE_RELEVANCE_POINTS,
+        llmRelevance: llmScore / 100,
+        similarity: story.similarity_score || 0, // keep for debugging
+        freshness: recencyBoost / CONFIG.RECENCY_BOOST_POINTS,
+        tagRelevance: 0, // removed - redundant with LLM
+        contentRelevance: 0, // removed - redundant with LLM
       }
     }
   })
@@ -377,17 +353,15 @@ export function calculateRelevanceScores(
     .sort((a, b) => b.relevance_score - a.relevance_score)
     .slice(0, CONFIG.FINAL_RESULTS_LIMIT)
   
-  // Log top scoring stories with point breakdown for debugging
-  console.log('=== TOP RELEVANCE SCORES (Point-Based) ===')
+  // Log top scoring stories with clean LLM-based breakdown
+  console.log('=== TOP RELEVANCE SCORES (LLM-Based) ===')
   sortedStories.slice(0, 5).forEach((item, i) => {
-    const llmPoints = Math.round(item.debug_scores.llmRelevance * CONFIG.LLM_BASE_POINTS)
-    const interestPoints = Math.round(item.debug_scores.tagRelevance * CONFIG.INTEREST_MATCH_POINTS)
-    const rolePoints = Math.round(item.debug_scores.contentRelevance * CONFIG.ROLE_RELEVANCE_POINTS)
-    const recencyPoints = Math.round(item.debug_scores.freshness * CONFIG.RECENCY_BOOST_POINTS)
+    const llmScore = Math.round(item.debug_scores.llmRelevance * 100)
+    const recencyBoost = Math.round(item.debug_scores.freshness * CONFIG.RECENCY_BOOST_POINTS)
     
     console.log(`${i + 1}. ${item.story.title.substring(0, 60)}...`)
     console.log(`   Final Score: ${item.relevance_score}/100`)
-    console.log(`   Points: LLM=${llmPoints}/${CONFIG.LLM_BASE_POINTS}, Interest=${interestPoints}/${CONFIG.INTEREST_MATCH_POINTS}, Role=${rolePoints}/${CONFIG.ROLE_RELEVANCE_POINTS}, Recency=${recencyPoints}/${CONFIG.RECENCY_BOOST_POINTS}`)
+    console.log(`   Breakdown: LLM=${llmScore}/100, Recency Boost=+${recencyBoost}`)
     console.log('---')
   })
   console.log('=== END RELEVANCE SCORES ===')
