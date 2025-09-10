@@ -10,15 +10,11 @@ const CONFIG = {
   EMBEDDING_MODEL: 'text-embedding-3-small',
   LLM_MODEL: 'gpt-4o-mini',
   MATCH_THRESHOLD: 0.4, // Balanced threshold for good matches
-  TOP_K_CANDIDATES: 30, // Pool for LLM filtering - reduced for better latency
-  MAX_PER_SOURCE: 3, // Maximum stories per source for diversity - reduced for faster processing
+  TOP_K_CANDIDATES: 35, // Optimized for fast retrieval and ranking
   FINAL_RESULTS_LIMIT: 30, // Final results for 3-row grid layout
   FRESHNESS_DECAY_DAYS: 14, // Days for freshness bias calculation
-  BLOCKLISTED_SOURCES: [] as string[], // Source names to exclude
-  // Simplified LLM-only scoring - clean and non-redundant
   RECENCY_BOOST_POINTS: 5, // 0-5 points for slight recency preference
-  // LLM handles all relevance scoring (0-100), recency adds small boost
-  LLM_FILTER_TOP_K: 30, // Top stories to keep after LLM filtering - aligned with candidates
+  LLM_BATCH_SIZE: 15, // Process stories in smaller batches to avoid timeouts
 }
 
 // Enhanced Story interface with personalization fields
@@ -63,72 +59,103 @@ export async function generateUserEmbedding(userPrefs: UserPreferences): Promise
 
 /**
  * Retrieve candidate stories using Supabase hybrid search function and calculate similarity scores
+ * Includes retry logic for timeout issues
  */
 export async function retrieveCandidateStories(
   userEmbedding: number[],
   limit: number = CONFIG.TOP_K_CANDIDATES
 ): Promise<DatabaseStory[]> {
-  try {
-    const { data, error } = await supabase.rpc('hybrid_story_search', {
-      query_embedding: userEmbedding,
-      match_threshold: CONFIG.MATCH_THRESHOLD,
-      match_count: limit,
-    })
-
-    if (error) {
-      console.error('Hybrid search error:', error)
-      throw error
-    }
-
-    // Calculate similarity scores for each story
-    const stories = (data || []) as DatabaseStory[]
-    console.log(`Processing ${stories.length} stories for similarity calculation`)
-    
-    const storiesWithSimilarity = stories.map((story: DatabaseStory, index: number) => {
-      if (!story.embedding) {
-        return { ...story, similarity_score: 0 }
-      }
+  const MAX_RETRIES = 2
+  let lastError: any = null
+  
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      console.log(`Hybrid search attempt ${attempt}/${MAX_RETRIES}`)
       
-      // Parse embedding if it's a string (common with Supabase vector data)
-      let storyEmbedding: number[]
-      if (typeof story.embedding === 'string') {
-        try {
-          // Remove brackets and split by comma, then parse as numbers
-          const embeddingStr = story.embedding.replace(/[\[\]]/g, '')
-          storyEmbedding = embeddingStr.split(',').map(val => parseFloat(val.trim()))
-          // Parsed successfully
-        } catch (e) {
-          console.error(`Failed to parse embedding string for story ${index}:`, e)
+      const { data, error } = await supabase.rpc('hybrid_story_search', {
+        query_embedding: userEmbedding,
+        match_threshold: CONFIG.MATCH_THRESHOLD,
+        match_count: limit * 2, // Get more candidates to filter by threshold
+      })
+
+      if (error) {
+        console.error(`Hybrid search error on attempt ${attempt}:`, error)
+        lastError = error
+        
+        // If it's a timeout error and we have retries left, continue
+        if (error.code === '57014' && attempt < MAX_RETRIES) {
+          console.log(`Retrying due to timeout...`)
+          await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1 second before retry
+          continue
+        }
+        
+        throw error
+      }
+
+      // Calculate similarity scores for each story
+      const stories = (data || []) as DatabaseStory[]
+      console.log(`Processing ${stories.length} stories for similarity calculation`)
+      
+      const storiesWithSimilarity = stories.map((story: DatabaseStory, index: number) => {
+        if (!story.embedding) {
           return { ...story, similarity_score: 0 }
         }
-      } else if (Array.isArray(story.embedding)) {
-        storyEmbedding = story.embedding
-        // Array embedding found
-      } else {
-        console.warn(`Story has unknown embedding type: ${typeof story.embedding}`)
-        return { ...story, similarity_score: 0 }
-      }
-      
-      // Validate embedding array
-      if (!Array.isArray(storyEmbedding) || storyEmbedding.length === 0 || storyEmbedding.some(isNaN)) {
-        return { ...story, similarity_score: 0 }
-      }
-      
-      // Calculate cosine similarity from embeddings
-      const similarity = calculateCosineSimilarity(userEmbedding, storyEmbedding)
-      
-      return {
-        ...story,
-        similarity_score: Math.max(0, Math.min(1, similarity)) // Clamp to [0,1]
-      }
-    })
+        
+        // Parse embedding if it's a string (common with Supabase vector data)
+        let storyEmbedding: number[]
+        if (typeof story.embedding === 'string') {
+          try {
+            // Remove brackets and split by comma, then parse as numbers
+            const embeddingStr = story.embedding.replace(/[\[\]]/g, '')
+            storyEmbedding = embeddingStr.split(',').map(val => parseFloat(val.trim()))
+            // Parsed successfully
+          } catch (e) {
+            console.error(`Failed to parse embedding string for story ${index}:`, e)
+            return { ...story, similarity_score: 0 }
+          }
+        } else if (Array.isArray(story.embedding)) {
+          storyEmbedding = story.embedding
+          // Array embedding found
+        } else {
+          console.warn(`Story has unknown embedding type: ${typeof story.embedding}`)
+          return { ...story, similarity_score: 0 }
+        }
+        
+        // Validate embedding array
+        if (!Array.isArray(storyEmbedding) || storyEmbedding.length === 0 || storyEmbedding.some(isNaN)) {
+          return { ...story, similarity_score: 0 }
+        }
+        
+        // Calculate cosine similarity from embeddings
+        const similarity = calculateCosineSimilarity(userEmbedding, storyEmbedding)
+        
+        return {
+          ...story,
+          similarity_score: Math.max(0, Math.min(1, similarity)) // Clamp to [0,1]
+        }
+      }).filter(story => story.similarity_score >= CONFIG.MATCH_THRESHOLD) // Apply threshold filter
+       .slice(0, limit) // Take only the requested amount
 
-    console.log(`Retrieved ${storiesWithSimilarity.length} candidate stories with similarity scores`)
-    return storiesWithSimilarity
-  } catch (error) {
-    console.error('Candidate retrieval failed:', error)
-    throw new Error('Failed to retrieve candidate stories')
+      console.log(`Retrieved ${storiesWithSimilarity.length} candidate stories with similarity scores on attempt ${attempt}`)
+      return storiesWithSimilarity
+      
+    } catch (error) {
+      console.error(`Candidate retrieval failed on attempt ${attempt}:`, error)
+      lastError = error
+      
+      // If this is the last attempt, don't continue the loop
+      if (attempt >= MAX_RETRIES) {
+        break
+      }
+      
+      // Wait before retry
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
   }
+  
+  // If we get here, all retries failed
+  console.error('All hybrid search attempts failed:', lastError)
+  throw new Error('Failed to retrieve candidate stories after retries')
 }
 
 /**
@@ -164,25 +191,38 @@ function calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
   return similarity
 }
 
+
+
+interface ScoredStory {
+  story: DatabaseStory
+  relevance_score: number
+  debug_scores: {
+    llmRelevance: number
+    similarity: number
+    freshness: number
+    tagRelevance: number
+    contentRelevance: number
+  }
+}
+
 /**
- * LLM-based relevance filtering - Stage 2 of hybrid pipeline
+ * Process a batch of stories for LLM relevance scoring
  */
-export async function filterByLLMRelevance(
+async function processBatch(
   userPrefs: UserPreferences,
-  stories: DatabaseStory[]
-): Promise<DatabaseStory[]> {
-  try {
-    // Prepare stories context for LLM evaluation
-    const storiesContext = stories.map((story, index) => 
-      `Story ${index + 1} (ID: ${story.id}):
+  batch: DatabaseStory[],
+  batchIndex: number
+): Promise<{ story_id: string; relevance_score: number }[]> {
+  const storiesContext = batch.map((story, index) => 
+    `Story ${index + 1} (ID: ${story.id}):
 Title: ${story.title}
 Content: ${(story.content || '').substring(0, 300)}...
 Tags: ${story.tags.join(', ')}
 Source: ${story.source_name}
 Published: ${new Date(story.published_at).toLocaleDateString()}`
-    ).join('\n\n')
+  ).join('\n\n')
 
-    const prompt = `You are a personal news assistant. Evaluate these ${stories.length} stories for a ${userPrefs.role} with these preferences:
+  const prompt = `You are a personal news assistant. Evaluate these ${batch.length} stories for a ${userPrefs.role} with these preferences:
 
 INTERESTS: ${userPrefs.interests.join(', ')}
 CURRENT PROJECTS: ${userPrefs.projects}
@@ -198,175 +238,137 @@ Score highly (70-100) stories that:
 Score moderately (30-69) stories that are somewhat related but not central to their interests.
 Score low (0-29) stories that are not relevant to their profile.
 
-Evaluate ALL ${stories.length} stories and return scores for each.
+Evaluate ALL ${batch.length} stories and return scores for each.
 
 STORIES:
 ${storiesContext}`
 
-    console.log(`Sending ${stories.length} stories to LLM for relevance filtering...`)
+  console.log(`Processing batch ${batchIndex + 1} with ${batch.length} stories...`)
 
-    const { object } = await generateObject({
-      model: openai(CONFIG.LLM_MODEL),
-      schema: StoryRelevanceSchema,
-      prompt,
-      temperature: 0.1,
-    })
-    
-    // Map LLM scores back to stories and sort by relevance
-    const storyMap = new Map(stories.map(s => [s.id, s]))
-    const scoredStories = object.rankings
-      .map(ranking => ({
-        story: storyMap.get(ranking.story_id),
-        llm_relevance_score: ranking.relevance_score
-      }))
-      .filter(item => item.story) // Remove stories not found
-      .sort((a, b) => b.llm_relevance_score - a.llm_relevance_score) // Sort by LLM score
-      .slice(0, CONFIG.LLM_FILTER_TOP_K) // Take top 50
-    
-    // Add LLM relevance score to story objects
-    const filteredStories = scoredStories.map(item => ({
-      ...item.story!,
-      llm_relevance_score: item.llm_relevance_score
-    }))
-
-    console.log(`LLM filtered ${stories.length} stories down to ${filteredStories.length} most relevant`)
-    console.log(`Top 3 LLM scores: ${scoredStories.slice(0, 3).map(s => s.llm_relevance_score).join(', ')}`)
-    
-    return filteredStories
-    
-  } catch (error) {
-    console.error('LLM relevance filtering failed:', error)
-    // Fallback: return top stories based on similarity scores
-    console.log('Using similarity fallback for relevance filtering')
-    return stories
-      .sort((a, b) => (b.similarity_score || 0) - (a.similarity_score || 0))
-      .slice(0, CONFIG.LLM_FILTER_TOP_K)
-      .map(story => ({ ...story, llm_relevance_score: 50 })) // Default score
-  }
-}
-
-/**
- * Apply business logic constraints: source limits, deduplication, freshness bias
- */
-export function applyBusinessConstraints(stories: DatabaseStory[]): DatabaseStory[] {
-  const seenIds = new Set<string>()
-  const seenTitles = new Set<string>()
-  const sourceCount = new Map<string, number>()
-  const now = new Date()
-  
-  // Filter and deduplicate
-  const filteredStories = stories.filter(story => {
-    // Deduplication by ID first (most important)
-    if (seenIds.has(story.id)) {
-      console.warn(`Duplicate story ID filtered: ${story.id}`)
-      return false
-    }
-    seenIds.add(story.id)
-    
-    // Deduplication by normalized title (catch similar stories)
-    const normalizedTitle = story.title.toLowerCase().trim()
-    if (seenTitles.has(normalizedTitle)) {
-      return false
-    }
-    seenTitles.add(normalizedTitle)
-
-    // Source diversity limits
-    const sourceName = story.source_name || 'unknown'
-    const currentCount = sourceCount.get(sourceName) || 0
-    if (currentCount >= CONFIG.MAX_PER_SOURCE) {
-      return false
-    }
-    sourceCount.set(sourceName, currentCount + 1)
-
-    // Blocklist filtering
-    if (CONFIG.BLOCKLISTED_SOURCES.includes(sourceName.toLowerCase())) {
-      return false
-    }
-
-    return true
+  const { object } = await generateObject({
+    model: openai(CONFIG.LLM_MODEL),
+    schema: StoryRelevanceSchema,
+    prompt,
+    temperature: 0.1,
   })
 
-  // Apply freshness bias - balance recency with vector similarity
-  return filteredStories.sort((a, b) => {
-    const aDate = new Date(a.published_at)
-    const bDate = new Date(b.published_at)
-    
-    // Freshness score (0-1, where 1 is most recent)
-    const aFreshness = Math.max(0, 1 - (now.getTime() - aDate.getTime()) / (CONFIG.FRESHNESS_DECAY_DAYS * 24 * 60 * 60 * 1000))
-    const bFreshness = Math.max(0, 1 - (now.getTime() - bDate.getTime()) / (CONFIG.FRESHNESS_DECAY_DAYS * 24 * 60 * 60 * 1000))
-    
-    // Prefer fresher content with moderate bias
-    return (bFreshness - aFreshness) * 0.3 // 30% weight to freshness, 70% to vector similarity
-  })
-}
-
-interface ScoredStory {
-  story: DatabaseStory
-  relevance_score: number
-  debug_scores: {
-    llmRelevance: number
-    similarity: number
-    freshness: number
-    tagRelevance: number
-    contentRelevance: number
-  }
+  return object.rankings
 }
 
 /**
  * Calculate clean relevance scores using LLM intelligence + minimal recency boost
  */
-export function calculateRelevanceScores(
+export async function calculateRelevanceScores(
   userPrefs: UserPreferences,
   stories: DatabaseStory[]
-): { story: DatabaseStory; relevance_score: number }[] {
-  const now = new Date()
-  
-  const scoredStories: ScoredStory[] = stories.map((story: DatabaseStory) => {
-    // Primary score: LLM relevance (0-100) - handles all user preference matching
-    const llmScore = story.llm_relevance_score || 50
-    
-    // Small recency boost (0-5 points) - slight preference for fresh content
-    const publishedDate = new Date(story.published_at)
-    const ageInDays = (now.getTime() - publishedDate.getTime()) / (1000 * 60 * 60 * 24)
-    const recencyBoost = Math.round(
-      Math.max(0, (1 - (ageInDays / CONFIG.FRESHNESS_DECAY_DAYS)) * CONFIG.RECENCY_BOOST_POINTS)
-    )
-    
-    // Final score: LLM score + small recency boost (max 105, but clamp to 100)
-    const finalScore = Math.max(1, Math.min(100, llmScore + recencyBoost))
-    
-    return {
-      story,
-      relevance_score: finalScore,
-      debug_scores: {
-        llmRelevance: llmScore / 100,
-        similarity: story.similarity_score || 0, // keep for debugging
-        freshness: recencyBoost / CONFIG.RECENCY_BOOST_POINTS,
-        tagRelevance: 0, // removed - redundant with LLM
-        contentRelevance: 0, // removed - redundant with LLM
-      }
+): Promise<{ story: DatabaseStory; relevance_score: number }[]> {
+  try {
+    // Step 1: Process stories in batches to avoid timeout issues
+    const batches = []
+    for (let i = 0; i < stories.length; i += CONFIG.LLM_BATCH_SIZE) {
+      batches.push(stories.slice(i, i + CONFIG.LLM_BATCH_SIZE))
     }
-  })
-  
-  // Sort by relevance score and take top results
-  const sortedStories = scoredStories
-    .sort((a, b) => b.relevance_score - a.relevance_score)
-    .slice(0, CONFIG.FINAL_RESULTS_LIMIT)
-  
-  // Log top scoring stories with clean LLM-based breakdown
-  console.log('=== TOP RELEVANCE SCORES (LLM-Based) ===')
-  sortedStories.slice(0, 5).forEach((item, i) => {
-    const llmScore = Math.round(item.debug_scores.llmRelevance * 100)
-    const recencyBoost = Math.round(item.debug_scores.freshness * CONFIG.RECENCY_BOOST_POINTS)
+
+    console.log(`Processing ${stories.length} stories in ${batches.length} batches of ${CONFIG.LLM_BATCH_SIZE}...`)
     
-    console.log(`${i + 1}. ${item.story.title.substring(0, 60)}...`)
-    console.log(`   Final Score: ${item.relevance_score}/100`)
-    console.log(`   Breakdown: LLM=${llmScore}/100, Recency Boost=+${recencyBoost}`)
-    console.log('---')
-  })
-  console.log('=== END RELEVANCE SCORES ===')
-  
-  return sortedStories.map(({ story, relevance_score }) => ({ story, relevance_score }))
+    // Process all batches in parallel with error handling for individual batches
+    const batchPromises = batches.map(async (batch, index) => {
+      try {
+        return await processBatch(userPrefs, batch, index)
+      } catch (error) {
+        console.error(`Batch ${index + 1} failed:`, error)
+        // Return empty rankings for failed batch
+        return []
+      }
+    })
+    
+    const batchResults = await Promise.all(batchPromises)
+    
+    // Combine all batch results (filtering out empty results from failed batches)
+    const allRankings = batchResults.flat().filter(ranking => ranking.story_id)
+    
+    // Step 2: Map LLM scores to stories and apply recency boost
+    const now = new Date()
+    const storyMap = new Map(stories.map(s => [s.id, s]))
+    
+    const scoredStories: ScoredStory[] = allRankings
+      .map(ranking => {
+        const story = storyMap.get(ranking.story_id)
+        if (!story) return null
+        
+        const llmScore = ranking.relevance_score
+        
+        // Small recency boost (0-5 points)
+        const publishedDate = new Date(story.published_at)
+        const ageInDays = (now.getTime() - publishedDate.getTime()) / (1000 * 60 * 60 * 24)
+        const recencyBoost = Math.round(
+          Math.max(0, (1 - (ageInDays / CONFIG.FRESHNESS_DECAY_DAYS)) * CONFIG.RECENCY_BOOST_POINTS)
+        )
+        
+        const finalScore = Math.max(1, Math.min(100, llmScore + recencyBoost))
+        
+        return {
+          story,
+          relevance_score: finalScore,
+          debug_scores: {
+            llmRelevance: llmScore / 100,
+            similarity: story.similarity_score || 0,
+            freshness: recencyBoost / CONFIG.RECENCY_BOOST_POINTS,
+            tagRelevance: 0,
+            contentRelevance: 0,
+          }
+        }
+      })
+      .filter(item => item !== null) as ScoredStory[]
+
+    // Step 3: Sort by relevance score with deterministic tie-breaking
+    const sortedStories = scoredStories
+      .sort((a, b) => {
+        const scoreDiff = b.relevance_score - a.relevance_score
+        return scoreDiff !== 0 ? scoreDiff : a.story.id.localeCompare(b.story.id)
+      })
+      .slice(0, CONFIG.FINAL_RESULTS_LIMIT)
+
+    // Log results
+    console.log('=== TOP RELEVANCE SCORES (LLM Personalized) ===')
+    sortedStories.slice(0, 5).forEach((item, i) => {
+      const llmScore = Math.round(item.debug_scores.llmRelevance * 100)
+      const recencyBoost = Math.round(item.debug_scores.freshness * CONFIG.RECENCY_BOOST_POINTS)
+      
+      console.log(`${i + 1}. ${item.story.title.substring(0, 60)}...`)
+      console.log(`   Final Score: ${item.relevance_score}/100`)
+      console.log(`   Breakdown: LLM=${llmScore}/100, Recency Boost=+${recencyBoost}`)
+      console.log('---')
+    })
+    console.log('=== END RELEVANCE SCORES ===')
+    
+    return sortedStories.map(({ story, relevance_score }) => ({ story, relevance_score }))
+    
+  } catch (error) {
+    console.error('LLM personalization failed, using similarity fallback:', error)
+    // Fallback: simple similarity-based scoring
+    const now = new Date()
+    const fallbackStories = stories.map(story => {
+      const publishedDate = new Date(story.published_at)
+      const ageInDays = (now.getTime() - publishedDate.getTime()) / (1000 * 60 * 60 * 24)
+      const recencyBoost = Math.round(
+        Math.max(0, (1 - (ageInDays / CONFIG.FRESHNESS_DECAY_DAYS)) * CONFIG.RECENCY_BOOST_POINTS)
+      )
+      const similarityScore = Math.round((story.similarity_score || 0.5) * 100)
+      
+      return {
+        story,
+        relevance_score: Math.max(1, Math.min(100, similarityScore + recencyBoost))
+      }
+    })
+    .sort((a, b) => {
+      const scoreDiff = b.relevance_score - a.relevance_score
+      return scoreDiff !== 0 ? scoreDiff : a.story.id.localeCompare(b.story.id)
+    })
+    .slice(0, CONFIG.FINAL_RESULTS_LIMIT)
+    
+    return fallbackStories
+  }
 }
 
 // LEGACY: LLM-based reranking (kept for optional future use)
@@ -405,15 +407,8 @@ export async function retrievePersonalizedStories(
       return []
     }
     
-    // Step 3: LLM relevance filtering (100 -> 50 stories)
-    const llmFilteredStories = await filterByLLMRelevance(userPrefs, candidateStories)
-    
-    // Step 4: Apply business constraints
-    const constrainedStories = applyBusinessConstraints(llmFilteredStories)
-    console.log(`Applied constraints: ${constrainedStories.length} stories remain`)
-    
-    // Step 5: Calculate hybrid relevance scores (LLM + heuristics)
-    const rankedResults = calculateRelevanceScores(userPrefs, constrainedStories)
+    // Step 3: Calculate personalized relevance scores using LLM + recency boost
+    const rankedResults = await calculateRelevanceScores(userPrefs, candidateStories)
     
     // Step 6: Transform to PersonalizedStory format
     const personalizedStories: PersonalizedStory[] = rankedResults.map(result => {
@@ -456,4 +451,4 @@ function getRelativeTime(publishedAt: string): string {
 }
 
 // Export configuration for easy adjustment
-export { CONFIG as RetrievalConfig }
+export { CONFIG as RetrievalCon }

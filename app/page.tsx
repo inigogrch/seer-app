@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, Suspense } from "react"
+import { useState, useEffect, useRef, Suspense } from "react"
 import { useSearchParams } from "next/navigation"
 import Link from "next/link"
 import Image from "next/image"
@@ -85,8 +85,8 @@ const getSourceIcon = (sourceName: string): React.ReactNode => {
 }
 
 const StoryCard = ({ story }: { story: Story }) => (
-  <Card className="group relative w-[420px] flex-shrink-0 snap-start flex flex-col overflow-hidden transition-shadow duration-300 hover:shadow-xl p-4">
-    <CardHeader className="flex items-center justify-between p-0 text-xs text-muted-foreground">
+  <Card className="group relative w-[420px] min-h-[380px] flex-shrink-0 snap-start flex flex-col overflow-hidden transition-all duration-300 ease-out hover:shadow-2xl hover:-translate-y-4 hover:scale-[1.02] p-4">
+    <CardHeader className="flex items-center justify-between p-0 text-xs text-muted-foreground flex-shrink-0 mb-2">
       <div className="flex items-center gap-2">
         {story.sourceIcon}
         <span>{story.source_name}</span>
@@ -100,8 +100,8 @@ const StoryCard = ({ story }: { story: Story }) => (
         <span className="whitespace-nowrap">{story.time}</span>
       </div>
     </CardHeader>
-    <CardContent className="p-0 flex-grow">
-      <div className="h-[150px] mb-1 bg-gray-100 rounded-md flex items-center justify-center -mt-2.5 overflow-hidden">
+    <CardContent className="p-0 flex-grow flex flex-col min-h-0">
+      <div className="h-[150px] mb-3 bg-gray-100 rounded-md flex items-center justify-center overflow-hidden flex-shrink-0">
         {(() => {
           const sourceName = story.source_name.toLowerCase()
           
@@ -239,16 +239,18 @@ const StoryCard = ({ story }: { story: Story }) => (
           return <span className="text-gray-400">Story Image</span>
         })()}
       </div>
-      <h3 className="font-semibold text-xl leading-tight mb-1">{story.title}</h3>
-      <p className="text-sm text-muted-foreground mb-1 line-clamp-3">
-        {story.summary || story.content}
-      </p>
-      <div className="flex flex-wrap gap-1.5 min-h-[2.5rem] items-start content-start">
-        {story.tags && story.tags.map((tag) => (
-          <Badge key={tag} variant="secondary" className="text-[10px] px-2 py-0.5">
-            {tag}
-          </Badge>
-        ))}
+      <div className="flex flex-col flex-grow min-h-0">
+        <h3 className="text-xl leading-tight mb-2" style={{fontWeight: 650}}>{story.title}</h3>
+        <p className="text-sm text-muted-foreground mb-3 line-clamp-1 flex-grow">
+          {story.summary || story.content}
+        </p>
+        <div className="flex flex-wrap gap-1.5 mt-auto pt-2">
+          {story.tags && story.tags.map((tag) => (
+            <Badge key={tag} variant="secondary" className="text-[10px] px-2 py-0.5">
+              {tag}
+            </Badge>
+          ))}
+        </div>
       </div>
     </CardContent>
     <CardFooter className="absolute bottom-4 left-4 right-4 bg-white/95 backdrop-blur-sm opacity-0 transform translate-y-full group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-300 ease-in-out">
@@ -279,6 +281,7 @@ const StorySection = ({
   onMoveUp,
   onMoveDown,
   loading = false,
+  isPersonalized = false,
 }: {
   title: string
   icon: React.ReactNode
@@ -288,30 +291,37 @@ const StorySection = ({
   onMoveUp: (index: number) => void
   onMoveDown: (index: number) => void
   loading?: boolean
+  isPersonalized?: boolean
 }) => (
-  <section className="mb-8">
-    {/* Show title/controls for regular feed, dashed line for personalized feed */}
+  <section className="mb-2 overflow-visible">
+    {/* Show title/controls for regular feed, row titles for personalized feed */}
     {title ? (
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold flex items-center gap-2">
+      <div className="flex items-center mb-4">
+        <h2 className="text-xl font-bold flex items-center gap-2 flex-shrink-0">
           {icon} {title}
         </h2>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" onClick={() => onMoveUp(index)} disabled={index === 0}>
-            <ChevronUp className="w-4 h-4" />
-          </Button>
-          <Button variant="ghost" size="icon" onClick={() => onMoveDown(index)} disabled={index === total - 1}>
-            <ChevronDown className="w-4 h-4" />
-          </Button>
-        </div>
+        {/* For personalized rows: show dashed line extending to the right */}
+        {isPersonalized ? (
+          <div className="flex-grow border-t border-dashed border-gray-300 ml-4"></div>
+        ) : (
+          // For regular feed: show move controls on the right
+          <div className="flex items-center gap-1 ml-auto">
+            <Button variant="ghost" size="icon" onClick={() => onMoveUp(index)} disabled={index === 0}>
+              <ChevronUp className="w-4 h-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={() => onMoveDown(index)} disabled={index === total - 1}>
+              <ChevronDown className="w-4 h-4" />
+            </Button>
+          </div>
+        )}
       </div>
     ) : (
-      // Dashed line separator for personalized feed
+      // Fallback: dashed line separator if no title
       index > 0 && (
         <div className="mb-6 border-t border-dashed border-gray-300"></div>
       )
     )}
-    <div className="flex gap-6 overflow-x-auto pb-4 snap-x snap-mandatory">
+    <div className="flex gap-6 overflow-x-auto overflow-y-visible pb-8 snap-x snap-mandatory">
       {loading && stories.length === 0 ? (
         <div className="flex items-center justify-center w-full h-40 text-muted-foreground">
           <div className="flex items-center gap-2">
@@ -346,6 +356,9 @@ function FeedPageContent() {
   const [userPreferences, setUserPreferences] = useState<UserPreferences | null>(null)
   const [personalizationError, setPersonalizationError] = useState<string | null>(null)
   const [isPersonalizing, setIsPersonalizing] = useState(false)
+  const [isPersonalizationInProgress, setIsPersonalizationInProgress] = useState(false)
+  const [lastPersonalizationHash, setLastPersonalizationHash] = useState<string | null>(null)
+  const personalizationRequestRef = useRef<Promise<void> | null>(null)
   const searchParams = useSearchParams()
 
   const fetchStories = async (forceRefresh = false) => {
@@ -444,19 +457,19 @@ function FeedPageContent() {
     setSections([
       {
         id: "personalized-row-1",
-        title: "",
+        title: "Top Picks for You 🔥",
         icon: <></>,
         stories: row1Stories
       },
       {
         id: "personalized-row-2", 
-        title: "",
+        title: "Actionable Highlights 📝",
         icon: <></>,
         stories: row2Stories
       },
       {
         id: "personalized-row-3",
-        title: "", 
+        title: "More Sauce 🧪", 
         icon: <></>,
         stories: row3Stories
       }
@@ -464,8 +477,30 @@ function FeedPageContent() {
   }
   
   const fetchPersonalizedStories = async (userPrefs: UserPreferences) => {
-    try {
-      setIsPersonalizing(true)
+    // Create hash of user preferences to detect changes
+    const prefsHash = JSON.stringify({
+      role: userPrefs.role,
+      interests: userPrefs.interests.sort(), // Sort for consistent hashing
+      projects: userPrefs.projects
+    })
+    
+    // Prevent duplicate requests using ref (synchronous check)
+    if (personalizationRequestRef.current) {
+      console.log('Personalization already in progress, skipping duplicate request')
+      return personalizationRequestRef.current
+    }
+    
+    // If same preferences as last successful personalization, use cache
+    if (prefsHash === lastPersonalizationHash && !isPersonalizing) {
+      console.log('Using cached personalized stories for same preferences')
+      return
+    }
+    
+    // Create the request promise and store it in ref
+    const requestPromise = (async () => {
+      try {
+        setIsPersonalizationInProgress(true)
+        setIsPersonalizing(true)
       const response = await fetch('/api/retrieve-feed', {
         method: 'POST',
         headers: {
@@ -523,23 +558,26 @@ function FeedPageContent() {
         setSections([
           {
             id: "personalized-row-1",
-            title: "",
+            title: "Top Picks for You 🔥",
             icon: <></>,
             stories: row1Stories
           },
           {
             id: "personalized-row-2", 
-            title: "",
+            title: "Actionable Highlights 📝",
             icon: <></>,
             stories: row2Stories
           },
           {
             id: "personalized-row-3",
-            title: "", 
+            title: "More Sauce 🧪", 
             icon: <></>,
             stories: row3Stories
           }
         ])
+        
+        // Mark this personalization as successful
+        setLastPersonalizationHash(prefsHash)
       } else {
         console.error('Personalized feed API returned error:', result.error)
         // Fall back to regular feed
@@ -549,14 +587,19 @@ function FeedPageContent() {
       console.error('Error fetching personalized stories:', error)
       setPersonalizationError(error instanceof Error ? error.message : 'Unknown error')
       
-      // Fall back to regular feed after a brief delay
-      setTimeout(async () => {
-        console.log('Falling back to regular feed due to personalization error')
-        await fetchRegularStories()
-      }, 1000)
+      // Fall back to regular feed immediately (no race condition delay)
+      console.log('Falling back to regular feed due to personalization error')
+      await fetchRegularStories()
     } finally {
       setIsPersonalizing(false)
+      setIsPersonalizationInProgress(false)
+      personalizationRequestRef.current = null // Clear the ref
     }
+    })()
+    
+    // Store the promise in ref and return it
+    personalizationRequestRef.current = requestPromise
+    return requestPromise
   }
   
   const clearUserPreferences = () => {
@@ -568,6 +611,10 @@ function FeedPageContent() {
     // Reset state
     setUserPreferences(null)
     setIsPersonalized(false)
+    setPersonalizationError(null)
+    
+    // Reset sections to initial state (removes personalized titles)
+    setSections(initialSections)
     
     // Fetch general feed
     fetchStories()
@@ -630,7 +677,12 @@ function FeedPageContent() {
 
   useEffect(() => {
     fetchStories()
-    const interval = setInterval(fetchStories, 300000) // Fetch every 5 minutes
+    const interval = setInterval(() => {
+      // Don't auto-refresh if personalization is in progress
+      if (!isPersonalizationInProgress) {
+        fetchStories()
+      }
+    }, 300000) // Fetch every 5 minutes
     
     return () => clearInterval(interval)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -738,7 +790,6 @@ function FeedPageContent() {
             <DropdownMenuItem>Category 1</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        {/* Impact filter temporarily commented out
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="bg-white">
@@ -746,10 +797,11 @@ function FeedPageContent() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent>
-            <DropdownMenuItem>Impact 1</DropdownMenuItem>
+            <DropdownMenuItem>High Impact</DropdownMenuItem>
+            <DropdownMenuItem>Medium Impact</DropdownMenuItem>
+            <DropdownMenuItem>Low Impact</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="bg-white">
@@ -774,6 +826,7 @@ function FeedPageContent() {
           onMoveUp={() => moveSection(index, "up")}
           onMoveDown={() => moveSection(index, "down")}
           loading={loading}
+          isPersonalized={isPersonalized}
         />
       ))}
     </div>

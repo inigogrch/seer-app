@@ -5,6 +5,18 @@
 
 @layer base {
   :root {
+    font-family: Inter, sans-serif;
+    font-feature-settings: 'liga' 1, 'calt' 1; /* fix for Chrome */
+  }
+
+  @supports (font-variation-settings: normal) {
+    :root { 
+      font-family: InterVariable, sans-serif;
+      font-variation-settings: 'wdth' 75; /* Make font narrower */
+    }
+  }
+
+  :root {
     --background: 204 20% 98%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
